@@ -3,7 +3,7 @@
  * UI controller and event handling
  */
 
-import { VoronoiGenerator } from './voronoi-generator.js?v=184';
+import { VoronoiGenerator } from './voronoi-generator.js?v=187';
 
 // DOM Elements - Generation
 const canvas = document.getElementById('voronoi-canvas');

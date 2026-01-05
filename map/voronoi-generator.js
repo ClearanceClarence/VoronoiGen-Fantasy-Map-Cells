@@ -6,7 +6,7 @@
 
 import { PRNG } from './prng.js';
 import { Noise } from './noise.js';
-import { NameGenerator } from './name-generator.js?v=184';
+import { NameGenerator } from './name-generator.js?v=187';
 
 // Elevation color gradient (green = low/sea level, red = high mountains)
 // Index 0 = sea level (0m), Index 255 = max height (6000m)
@@ -1067,7 +1067,7 @@ export class VoronoiGenerator {
             return;
         }
         
-        console.log(`Generating ${numKingdoms} kingdoms...`);
+        console.log(`Generating ${numKingdoms} kingdoms with natural borders...`);
         
         // Get all land cells
         const landCells = [];
@@ -1083,7 +1083,7 @@ export class VoronoiGenerator {
         }
         
         // Initialize kingdom data
-        this.kingdoms = new Int16Array(this.cellCount).fill(-1); // -1 = no kingdom (ocean)
+        this.kingdoms = new Int16Array(this.cellCount).fill(-1);
         this.kingdomCapitals = [];
         this.kingdomNames = [];
         this.kingdomCentroids = [];
@@ -1124,85 +1124,189 @@ export class VoronoiGenerator {
         // Sort landmasses by size (largest first)
         landmasses.sort((a, b) => b.size - a.size);
         
+        // Calculate edge costs - rivers and mountains make good borders
+        const edgeCost = this._calculateBorderCosts();
+        
         // Calculate total land and how to distribute kingdoms
         const totalLand = landCells.length;
-        const minCellsForKingdom = Math.max(10, totalLand * 0.01); // At least 1% of land or 10 cells
+        const minCellsForKingdom = Math.max(10, totalLand * 0.01);
         
-        // Count significant landmasses (ones big enough for their own kingdom)
         const significantLandmasses = landmasses.filter(lm => lm.size >= minCellsForKingdom);
         const tinyLandmasses = landmasses.filter(lm => lm.size < minCellsForKingdom);
         
         // Distribute kingdoms across significant landmasses
         let kingdomIdx = 0;
-        const landmassKingdoms = new Map(); // landmass id -> array of kingdom indices
         
         for (const landmass of significantLandmasses) {
             const proportion = landmass.size / totalLand;
             let kingdomsForThis = Math.max(1, Math.round(proportion * numKingdoms));
-            
-            // Cap kingdoms per landmass
             kingdomsForThis = Math.min(kingdomsForThis, Math.floor(landmass.size / 100));
             kingdomsForThis = Math.max(1, kingdomsForThis);
             
-            const kingdomIndices = [];
+            // Select capitals using better algorithm - prefer lowlands, avoid edges
+            const capitals = this._selectGoodCapitals(landmass.cells, kingdomsForThis);
             
-            // Select capitals for this landmass
-            const capitals = this._selectKingdomCapitals(landmass.cells, kingdomsForThis);
-            
-            // Initialize competitive flood fill for this landmass only
+            // Initialize priority queues for weighted flood fill
             const queues = [];
+            const startKingdomIdx = kingdomIdx;
             for (const capital of capitals) {
                 this.kingdoms[capital] = kingdomIdx;
                 this.kingdomCapitals.push(capital);
-                kingdomIndices.push(kingdomIdx);
-                queues.push([capital]);
+                queues.push([{ cell: capital, cost: 0 }]);
                 kingdomIdx++;
             }
             
-            // Flood fill within this landmass only
-            let iterations = 0;
-            const maxIterations = landmass.cells.length * 2;
+            // Weighted flood fill - expand based on cost (lower cost first)
+            const cellCost = new Float32Array(this.cellCount).fill(Infinity);
+            for (let q = 0; q < queues.length; q++) {
+                cellCost[capitals[q]] = 0;
+            }
             
-            while (iterations < maxIterations) {
+            // Use a simpler round-robin approach that's more reliable
+            let totalAssigned = capitals.length;
+            const targetSize = landmass.cells.length;
+            
+            while (totalAssigned < targetSize) {
                 let anyExpanded = false;
                 
+                // Each kingdom takes turns expanding
                 for (let q = 0; q < queues.length; q++) {
                     if (queues[q].length === 0) continue;
                     
-                    const current = queues[q].shift();
+                    // Sort by cost and take lowest
+                    queues[q].sort((a, b) => a.cost - b.cost);
+                    const { cell: current, cost: currentCost } = queues[q].shift();
+                    
                     const myKingdom = this.kingdoms[current];
+                    if (myKingdom < 0) continue;
                     
                     for (const neighbor of this.voronoi.neighbors(current)) {
-                        if (this.kingdoms[neighbor] >= 0) continue;
-                        if (landmassId[neighbor] !== landmass.id) continue; // Stay on same landmass
+                        if (landmassId[neighbor] !== landmass.id) continue;
+                        if (this.kingdoms[neighbor] >= 0) continue; // Already claimed
                         
+                        // Calculate cost to expand to this neighbor
+                        const edgeKey = current < neighbor ? `${current}-${neighbor}` : `${neighbor}-${current}`;
+                        const crossingCost = edgeCost.get(edgeKey) || 1;
+                        const newCost = currentCost + crossingCost;
+                        
+                        // Claim this cell
                         this.kingdoms[neighbor] = myKingdom;
-                        queues[q].push(neighbor);
+                        cellCost[neighbor] = newCost;
+                        queues[q].push({ cell: neighbor, cost: newCost });
+                        totalAssigned++;
                         anyExpanded = true;
                     }
                 }
                 
                 if (!anyExpanded) break;
-                iterations++;
             }
-            
-            landmassKingdoms.set(landmass.id, kingdomIndices);
         }
         
-        // Handle tiny landmasses - each becomes its own small kingdom
+        // Handle tiny landmasses - assign to nearest existing kingdom (not their own)
         for (const landmass of tinyLandmasses) {
-            // Create a new kingdom for this tiny island
-            const capital = landmass.cells[0];
-            this.kingdoms[capital] = kingdomIdx;
-            this.kingdomCapitals.push(capital);
+            // Find nearest kingdom by checking all cells with assigned kingdoms
+            let nearestKingdom = -1;
+            let nearestDist = Infinity;
             
-            // Assign all cells to this kingdom
+            // Get centroid of this tiny landmass
+            let cx = 0, cy = 0;
             for (const cell of landmass.cells) {
-                this.kingdoms[cell] = kingdomIdx;
+                cx += this.points[cell * 2];
+                cy += this.points[cell * 2 + 1];
+            }
+            cx /= landmass.cells.length;
+            cy /= landmass.cells.length;
+            
+            // Find nearest assigned cell
+            for (let i = 0; i < this.cellCount; i++) {
+                if (this.kingdoms[i] < 0) continue;
+                const x = this.points[i * 2];
+                const y = this.points[i * 2 + 1];
+                const dist = (x - cx) ** 2 + (y - cy) ** 2;
+                if (dist < nearestDist) {
+                    nearestDist = dist;
+                    nearestKingdom = this.kingdoms[i];
+                }
             }
             
-            kingdomIdx++;
+            // If no kingdom found yet (shouldn't happen), create one
+            if (nearestKingdom < 0) {
+                nearestKingdom = kingdomIdx;
+                this.kingdomCapitals.push(landmass.cells[0]);
+                kingdomIdx++;
+            }
+            
+            // Assign all cells in tiny landmass to nearest kingdom
+            for (const cell of landmass.cells) {
+                this.kingdoms[cell] = nearestKingdom;
+            }
         }
+        
+        // CRITICAL: Ensure ALL land cells are assigned to a kingdom
+        // Use distance-based assignment for any remaining unassigned cells
+        for (let pass = 0; pass < 20; pass++) {
+            let assignedThisPass = 0;
+            
+            for (let i = 0; i < this.cellCount; i++) {
+                if (this.heights[i] < ELEVATION.SEA_LEVEL) continue;
+                if (this.kingdoms[i] >= 0) continue;
+                
+                // First try: find assigned neighbor
+                let bestKingdom = -1;
+                for (const neighbor of this.voronoi.neighbors(i)) {
+                    if (this.kingdoms[neighbor] >= 0) {
+                        bestKingdom = this.kingdoms[neighbor];
+                        break;
+                    }
+                }
+                
+                // Second try: find nearest assigned cell by distance
+                if (bestKingdom < 0) {
+                    const x = this.points[i * 2];
+                    const y = this.points[i * 2 + 1];
+                    let nearestDist = Infinity;
+                    
+                    for (let j = 0; j < this.cellCount; j++) {
+                        if (this.kingdoms[j] < 0) continue;
+                        const jx = this.points[j * 2];
+                        const jy = this.points[j * 2 + 1];
+                        const dist = (jx - x) ** 2 + (jy - y) ** 2;
+                        if (dist < nearestDist) {
+                            nearestDist = dist;
+                            bestKingdom = this.kingdoms[j];
+                        }
+                    }
+                }
+                
+                if (bestKingdom >= 0) {
+                    this.kingdoms[i] = bestKingdom;
+                    assignedThisPass++;
+                }
+            }
+            
+            if (assignedThisPass === 0) break;
+        }
+        
+        // Final check - count any still unassigned
+        let stillUnassigned = 0;
+        for (let i = 0; i < this.cellCount; i++) {
+            if (this.heights[i] >= ELEVATION.SEA_LEVEL && this.kingdoms[i] < 0) {
+                stillUnassigned++;
+                // Force assign to kingdom 0 as last resort
+                if (kingdomIdx > 0) {
+                    this.kingdoms[i] = 0;
+                }
+            }
+        }
+        if (stillUnassigned > 0) {
+            console.warn(`Force-assigned ${stillUnassigned} cells to kingdom 0`);
+        }
+        
+        // Smooth kingdom borders - multiple passes
+        this._smoothKingdomBorders(3);
+        
+        // Remove small exclaves
+        this._removeKingdomExclaves();
         
         // Update kingdom count
         this.kingdomCount = kingdomIdx;
@@ -1246,13 +1350,288 @@ export class VoronoiGenerator {
     }
     
     /**
-     * Select kingdom capital locations - spread across land
+     * Calculate border costs - rivers and mountains make natural borders
+     */
+    _calculateBorderCosts() {
+        const edgeCost = new Map();
+        
+        // Check if we have rivers
+        const hasRivers = this.riverPaths && this.riverPaths.length > 0;
+        
+        // Build set of river edges for fast lookup
+        const riverEdges = new Set();
+        if (hasRivers) {
+            for (const river of this.riverPaths) {
+                for (let i = 0; i < river.length - 1; i++) {
+                    const c1 = river[i];
+                    const c2 = river[i + 1];
+                    const key = c1 < c2 ? `${c1}-${c2}` : `${c2}-${c1}`;
+                    riverEdges.add(key);
+                }
+            }
+        }
+        
+        // Calculate cost for each edge between land cells
+        for (let i = 0; i < this.cellCount; i++) {
+            if (this.heights[i] < ELEVATION.SEA_LEVEL) continue;
+            
+            for (const neighbor of this.voronoi.neighbors(i)) {
+                if (this.heights[neighbor] < ELEVATION.SEA_LEVEL) continue;
+                if (neighbor < i) continue; // Only process each edge once
+                
+                const key = `${i}-${neighbor}`;
+                let cost = 1.0; // Base cost
+                
+                // River crossing - high cost (makes good border)
+                if (riverEdges.has(key)) {
+                    cost = 10.0;
+                }
+                
+                // Mountain/elevation difference - medium cost
+                const elevDiff = Math.abs(this.heights[i] - this.heights[neighbor]);
+                if (elevDiff > 0.1) {
+                    cost = Math.max(cost, 3.0 + elevDiff * 10);
+                }
+                
+                // High elevation (mountains) - slightly higher cost
+                const avgElev = (this.heights[i] + this.heights[neighbor]) / 2;
+                if (avgElev > 0.7) {
+                    cost = Math.max(cost, 2.0);
+                }
+                
+                edgeCost.set(key, cost);
+            }
+        }
+        
+        return edgeCost;
+    }
+    
+    /**
+     * Select good capital locations - prefer central lowlands
+     */
+    _selectGoodCapitals(landCells, count) {
+        // Score each cell based on suitability as capital
+        const scores = [];
+        
+        // Calculate centroid of landmass
+        let cx = 0, cy = 0;
+        for (const cell of landCells) {
+            cx += this.points[cell * 2];
+            cy += this.points[cell * 2 + 1];
+        }
+        cx /= landCells.length;
+        cy /= landCells.length;
+        
+        // Calculate max distance for normalization
+        let maxDist = 0;
+        for (const cell of landCells) {
+            const dx = this.points[cell * 2] - cx;
+            const dy = this.points[cell * 2 + 1] - cy;
+            maxDist = Math.max(maxDist, Math.sqrt(dx * dx + dy * dy));
+        }
+        
+        for (const cell of landCells) {
+            const x = this.points[cell * 2];
+            const y = this.points[cell * 2 + 1];
+            const elev = this.heights[cell];
+            
+            // Distance from center (prefer central)
+            const dx = x - cx;
+            const dy = y - cy;
+            const distFromCenter = Math.sqrt(dx * dx + dy * dy) / (maxDist || 1);
+            
+            // Elevation score (prefer lowlands but not coast)
+            const elevScore = elev < 0.5 ? 1.0 : (elev < 0.7 ? 0.5 : 0.2);
+            
+            // Count land neighbors (prefer interior)
+            let landNeighbors = 0;
+            for (const n of this.voronoi.neighbors(cell)) {
+                if (this.heights[n] >= ELEVATION.SEA_LEVEL) landNeighbors++;
+            }
+            const interiorScore = landNeighbors >= 3 ? 1.0 : 0.3;
+            
+            // Combined score
+            const score = (1 - distFromCenter * 0.5) * elevScore * interiorScore + PRNG.random() * 0.3;
+            scores.push({ cell, score });
+        }
+        
+        // Sort by score
+        scores.sort((a, b) => b.score - a.score);
+        
+        // Select capitals with minimum distance constraint
+        const minDistSq = (this.width / Math.sqrt(count * 3)) ** 2;
+        const capitals = [];
+        
+        for (const { cell } of scores) {
+            if (capitals.length >= count) break;
+            
+            const x = this.points[cell * 2];
+            const y = this.points[cell * 2 + 1];
+            
+            let tooClose = false;
+            for (const existing of capitals) {
+                const ex = this.points[existing * 2];
+                const ey = this.points[existing * 2 + 1];
+                if ((x - ex) ** 2 + (y - ey) ** 2 < minDistSq) {
+                    tooClose = true;
+                    break;
+                }
+            }
+            
+            if (!tooClose) {
+                capitals.push(cell);
+            }
+        }
+        
+        // Fill remaining if needed
+        for (const { cell } of scores) {
+            if (capitals.length >= count) break;
+            if (!capitals.includes(cell)) {
+                capitals.push(cell);
+            }
+        }
+        
+        return capitals;
+    }
+    
+    /**
+     * Smooth kingdom borders - reduce jaggedness
+     */
+    _smoothKingdomBorders(iterations = 3) {
+        for (let iter = 0; iter < iterations; iter++) {
+            const changes = [];
+            
+            for (let i = 0; i < this.cellCount; i++) {
+                const myKingdom = this.kingdoms[i];
+                if (myKingdom < 0) continue;
+                
+                // Count neighboring kingdoms
+                const neighborCounts = new Map();
+                let totalNeighbors = 0;
+                
+                for (const neighbor of this.voronoi.neighbors(i)) {
+                    const nk = this.kingdoms[neighbor];
+                    if (nk >= 0) {
+                        neighborCounts.set(nk, (neighborCounts.get(nk) || 0) + 1);
+                        totalNeighbors++;
+                    }
+                }
+                
+                if (totalNeighbors === 0) continue;
+                
+                // If majority of neighbors are different kingdom, consider switching
+                const myCount = neighborCounts.get(myKingdom) || 0;
+                
+                // Find most common neighbor kingdom
+                let maxCount = 0;
+                let dominantKingdom = myKingdom;
+                for (const [kingdom, count] of neighborCounts) {
+                    if (count > maxCount) {
+                        maxCount = count;
+                        dominantKingdom = kingdom;
+                    }
+                }
+                
+                // Switch if surrounded by other kingdom (>= 2/3 of neighbors)
+                if (dominantKingdom !== myKingdom && maxCount >= totalNeighbors * 0.67) {
+                    // Don't switch capitals
+                    if (!this.kingdomCapitals.includes(i)) {
+                        changes.push({ cell: i, newKingdom: dominantKingdom });
+                    }
+                }
+            }
+            
+            // Apply changes
+            for (const { cell, newKingdom } of changes) {
+                this.kingdoms[cell] = newKingdom;
+            }
+            
+            if (changes.length === 0) break;
+        }
+    }
+    
+    /**
+     * Remove small exclaves - isolated cells of a kingdom
+     */
+    _removeKingdomExclaves() {
+        // For each kingdom, find connected components
+        for (let k = 0; k < this.kingdomCapitals.length; k++) {
+            const capital = this.kingdomCapitals[k];
+            if (capital < 0 || this.kingdoms[capital] !== k) continue;
+            
+            // BFS from capital to find main body
+            const mainBody = new Set();
+            const queue = [capital];
+            mainBody.add(capital);
+            
+            while (queue.length > 0) {
+                const current = queue.shift();
+                
+                for (const neighbor of this.voronoi.neighbors(current)) {
+                    if (this.kingdoms[neighbor] === k && !mainBody.has(neighbor)) {
+                        mainBody.add(neighbor);
+                        queue.push(neighbor);
+                    }
+                }
+            }
+            
+            // Any cell not in main body is an exclave - reassign to neighbor
+            for (let i = 0; i < this.cellCount; i++) {
+                if (this.kingdoms[i] === k && !mainBody.has(i)) {
+                    // Find most common neighboring kingdom
+                    const neighborCounts = new Map();
+                    for (const neighbor of this.voronoi.neighbors(i)) {
+                        const nk = this.kingdoms[neighbor];
+                        if (nk >= 0 && nk !== k) {
+                            neighborCounts.set(nk, (neighborCounts.get(nk) || 0) + 1);
+                        }
+                    }
+                    
+                    let maxCount = 0;
+                    let bestKingdom = k;
+                    for (const [kingdom, count] of neighborCounts) {
+                        if (count > maxCount) {
+                            maxCount = count;
+                            bestKingdom = kingdom;
+                        }
+                    }
+                    
+                    // If no land neighbors from other kingdoms (island), find nearest by distance
+                    if (bestKingdom === k) {
+                        const x = this.points[i * 2];
+                        const y = this.points[i * 2 + 1];
+                        let nearestDist = Infinity;
+                        
+                        for (let j = 0; j < this.cellCount; j++) {
+                            const jk = this.kingdoms[j];
+                            if (jk < 0 || jk === k) continue;
+                            
+                            const jx = this.points[j * 2];
+                            const jy = this.points[j * 2 + 1];
+                            const dist = (jx - x) ** 2 + (jy - y) ** 2;
+                            if (dist < nearestDist) {
+                                nearestDist = dist;
+                                bestKingdom = jk;
+                            }
+                        }
+                    }
+                    
+                    if (bestKingdom !== k) {
+                        this.kingdoms[i] = bestKingdom;
+                    }
+                }
+            }
+        }
+    }
+    
+    /**
+     * Select kingdom capital locations - spread across land (legacy - kept for compatibility)
      */
     _selectKingdomCapitals(landCells, count, existingCapitals = []) {
         // Shuffle land cells
         const shuffled = [...landCells];
         for (let i = shuffled.length - 1; i > 0; i--) {
-            const j = Math.floor(Math.random() * (i + 1));
+            const j = Math.floor(PRNG.random() * (i + 1));
             [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
         }
         
@@ -1379,7 +1758,7 @@ export class VoronoiGenerator {
         
         // Shuffle
         for (let i = upperPortion.length - 1; i > 0; i--) {
-            const j = Math.floor(Math.random() * (i + 1));
+            const j = Math.floor(PRNG.random() * (i + 1));
             [upperPortion[i], upperPortion[j]] = [upperPortion[j], upperPortion[i]];
         }
         
@@ -3426,15 +3805,10 @@ export class VoronoiGenerator {
         if (!this.kingdoms || !this.heights) return;
         
         const zoom = this.viewport.zoom;
-        const borderWidth = Math.max(0.4, 0.8 / zoom);
+        const borderWidth = Math.max(0.6, 1.2 / zoom);
         
-        // Subtle brown border for old map look
-        ctx.strokeStyle = 'rgba(139, 115, 85, 0.6)';
-        ctx.lineWidth = borderWidth;
-        ctx.lineCap = 'round';
-        ctx.lineJoin = 'round';
-        
-        ctx.beginPath();
+        // Collect border edges between different kingdoms (not coastlines)
+        const borderEdges = [];
         
         for (let i = 0; i < this.cellCount; i++) {
             if (this.heights[i] < ELEVATION.SEA_LEVEL) continue;
@@ -3469,16 +3843,184 @@ export class VoronoiGenerator {
                 const neighborIsOcean = edgeNeighbor < 0 || this.heights[edgeNeighbor] < ELEVATION.SEA_LEVEL;
                 const neighborKingdom = edgeNeighbor >= 0 ? this.kingdoms[edgeNeighbor] : -1;
                 
-                // Only draw border if different kingdom AND not coastline
-                // (coastline is handled by smooth coastline border)
-                if (!neighborIsOcean && neighborKingdom !== myKingdom) {
-                    ctx.moveTo(v1[0], v1[1]);
-                    ctx.lineTo(v2[0], v2[1]);
+                // Only collect border if different kingdom AND not coastline
+                if (!neighborIsOcean && neighborKingdom !== myKingdom && neighborKingdom >= 0) {
+                    // Create sorted key to avoid duplicates
+                    const k1 = Math.min(myKingdom, neighborKingdom);
+                    const k2 = Math.max(myKingdom, neighborKingdom);
+                    borderEdges.push({
+                        x1: v1[0], y1: v1[1],
+                        x2: v2[0], y2: v2[1],
+                        kingdoms: `${k1}-${k2}`
+                    });
                 }
             }
         }
         
-        ctx.stroke();
+        if (borderEdges.length === 0) return;
+        
+        // Chain edges into continuous paths and smooth them
+        const smoothedPaths = this._buildSmoothBorderPaths(borderEdges);
+        
+        // Draw smoothed borders
+        ctx.strokeStyle = 'rgba(101, 85, 60, 0.7)';
+        ctx.lineWidth = borderWidth;
+        ctx.lineCap = 'round';
+        ctx.lineJoin = 'round';
+        
+        for (const path of smoothedPaths) {
+            if (path.length < 2) continue;
+            
+            ctx.beginPath();
+            ctx.moveTo(path[0][0], path[0][1]);
+            
+            for (let i = 1; i < path.length; i++) {
+                ctx.lineTo(path[i][0], path[i][1]);
+            }
+            
+            ctx.stroke();
+        }
+    }
+    
+    /**
+     * Build smooth border paths from edges
+     */
+    _buildSmoothBorderPaths(edges) {
+        if (edges.length === 0) return [];
+        
+        // Build adjacency graph
+        const vertexKey = (x, y) => `${Math.round(x * 10)},${Math.round(y * 10)}`;
+        const adjacency = new Map();
+        
+        for (const edge of edges) {
+            const k1 = vertexKey(edge.x1, edge.y1);
+            const k2 = vertexKey(edge.x2, edge.y2);
+            
+            if (!adjacency.has(k1)) adjacency.set(k1, []);
+            if (!adjacency.has(k2)) adjacency.set(k2, []);
+            
+            adjacency.get(k1).push({ x: edge.x2, y: edge.y2, key: k2 });
+            adjacency.get(k2).push({ x: edge.x1, y: edge.y1, key: k1 });
+        }
+        
+        // Chain into paths
+        const usedEdges = new Set();
+        const paths = [];
+        
+        for (const [startKey, startNeighbors] of adjacency) {
+            if (startNeighbors.length === 0) continue;
+            
+            for (const firstNeighbor of startNeighbors) {
+                const edgeId = startKey < firstNeighbor.key ? 
+                    `${startKey}|${firstNeighbor.key}` : `${firstNeighbor.key}|${startKey}`;
+                
+                if (usedEdges.has(edgeId)) continue;
+                usedEdges.add(edgeId);
+                
+                const [sx, sy] = startKey.split(',').map(n => parseInt(n) / 10);
+                const path = [[sx, sy], [firstNeighbor.x, firstNeighbor.y]];
+                
+                let prevKey = startKey;
+                let currentKey = firstNeighbor.key;
+                
+                // Follow the chain
+                for (let iter = 0; iter < 10000; iter++) {
+                    const neighbors = adjacency.get(currentKey);
+                    if (!neighbors) break;
+                    
+                    let foundNext = false;
+                    for (const next of neighbors) {
+                        if (next.key === prevKey) continue;
+                        
+                        const nextEdgeId = currentKey < next.key ? 
+                            `${currentKey}|${next.key}` : `${next.key}|${currentKey}`;
+                        
+                        if (usedEdges.has(nextEdgeId)) continue;
+                        
+                        usedEdges.add(nextEdgeId);
+                        path.push([next.x, next.y]);
+                        
+                        prevKey = currentKey;
+                        currentKey = next.key;
+                        foundNext = true;
+                        break;
+                    }
+                    
+                    if (!foundNext) break;
+                    if (currentKey === startKey) break;
+                }
+                
+                if (path.length >= 2) {
+                    paths.push(path);
+                }
+            }
+        }
+        
+        // Apply smoothing to each path
+        const smoothedPaths = [];
+        for (const path of paths) {
+            // Check if closed loop
+            const isClosed = path.length > 3 && 
+                Math.abs(path[0][0] - path[path.length-1][0]) < 1 &&
+                Math.abs(path[0][1] - path[path.length-1][1]) < 1;
+            
+            let smoothed = path;
+            // Apply 2 iterations of Chaikin smoothing
+            for (let iter = 0; iter < 2; iter++) {
+                smoothed = this._chaikinSmoothPath(smoothed, isClosed);
+            }
+            smoothedPaths.push(smoothed);
+        }
+        
+        return smoothedPaths;
+    }
+    
+    /**
+     * Chaikin smoothing for open or closed paths
+     */
+    _chaikinSmoothPath(points, closed = false) {
+        if (points.length < 3) return points;
+        
+        const result = [];
+        const n = points.length;
+        
+        if (closed) {
+            // Closed path - smooth all segments including wrap-around
+            for (let i = 0; i < n; i++) {
+                const p1 = points[i];
+                const p2 = points[(i + 1) % n];
+                
+                result.push([
+                    p1[0] * 0.75 + p2[0] * 0.25,
+                    p1[1] * 0.75 + p2[1] * 0.25
+                ]);
+                result.push([
+                    p1[0] * 0.25 + p2[0] * 0.75,
+                    p1[1] * 0.25 + p2[1] * 0.75
+                ]);
+            }
+        } else {
+            // Open path - preserve endpoints
+            result.push([points[0][0], points[0][1]]);
+            
+            for (let i = 0; i < n - 1; i++) {
+                const p1 = points[i];
+                const p2 = points[i + 1];
+                
+                result.push([
+                    p1[0] * 0.75 + p2[0] * 0.25,
+                    p1[1] * 0.75 + p2[1] * 0.25
+                ]);
+                result.push([
+                    p1[0] * 0.25 + p2[0] * 0.75,
+                    p1[1] * 0.25 + p2[1] * 0.75
+                ]);
+            }
+            
+            result.push([points[n-1][0], points[n-1][1]]);
+        }
+        
+        return result;
     }
     
     /**
