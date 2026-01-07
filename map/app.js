@@ -61,6 +61,8 @@ const numRiversValue = document.getElementById('num-rivers-value');
 // DOM Elements - Political
 const numKingdomsSlider = document.getElementById('num-kingdoms');
 const numKingdomsValue = document.getElementById('num-kingdoms-value');
+const roadDensitySlider = document.getElementById('road-density');
+const roadDensityValue = document.getElementById('road-density-value');
 const generateKingdomsBtn = document.getElementById('generate-kingdoms-btn');
 const dashedBordersToggle = document.getElementById('dashed-borders');
 
@@ -200,7 +202,7 @@ function generateHeightmap() {
         
         // Auto-generate kingdoms if in political mode
         if (generator.renderMode === 'political') {
-            generator.generateKingdoms(parseInt(numKingdomsSlider.value));
+            generator.generateKingdoms(parseInt(numKingdomsSlider.value), parseInt(roadDensitySlider.value));
         }
         
         generator.render();
@@ -347,6 +349,10 @@ numKingdomsSlider.addEventListener('input', (e) => {
     numKingdomsValue.textContent = e.target.value;
 });
 
+roadDensitySlider.addEventListener('input', (e) => {
+    roadDensityValue.textContent = e.target.value;
+});
+
 function generateKingdoms() {
     if (!generator.heights) {
         alert('Generate heightmap first');
@@ -358,7 +364,8 @@ function generateKingdoms() {
     
     setTimeout(() => {
         try {
-            generator.generateKingdoms(parseInt(numKingdomsSlider.value));
+            const roadDensity = parseInt(roadDensitySlider.value);
+            generator.generateKingdoms(parseInt(numKingdomsSlider.value), roadDensity);
             
             // Switch to political view
             renderMode.value = 'political';
@@ -404,7 +411,7 @@ renderMode.addEventListener('change', (e) => {
     
     // Auto-generate kingdoms if switching to political mode and they don't exist
     if (e.target.value === 'political' && !generator.kingdoms && generator.heights) {
-        generator.generateKingdoms(parseInt(numKingdomsSlider.value));
+        generator.generateKingdoms(parseInt(numKingdomsSlider.value), parseInt(roadDensitySlider.value));
     }
     
     generator.render();
@@ -836,7 +843,7 @@ setTimeout(() => {
                 
                 setTimeout(() => {
                     // Generate kingdoms for political view (default)
-                    generator.generateKingdoms(parseInt(numKingdomsSlider.value));
+                    generator.generateKingdoms(parseInt(numKingdomsSlider.value), parseInt(roadDensitySlider.value));
                     
                     updateLoadingStatus('Rendering');
                     

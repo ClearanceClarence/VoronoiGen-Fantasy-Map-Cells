@@ -54,11 +54,27 @@ render() {
     // Render political map (kingdoms)
     if (this.renderMode === 'political') {
         this._renderPoliticalMap(ctx, bounds);
+        // Render contour lines (subtle elevation indicators)
+        if (this.heights) {
+            this._renderContourLines(ctx, bounds);
+        }
         if (this.showRivers && this.rivers && this.rivers.length > 0) {
             this._renderRivers(ctx, bounds);
         }
         if (this.kingdoms && this.kingdomCount > 0 && this.kingdomNames && this.kingdomCentroids) {
             this._renderKingdomNames(ctx, bounds);
+        }
+        // Render roads first (below cities)
+        if (this.roads && this.roads.length > 0) {
+            this._renderRoads(ctx, bounds);
+        }
+        // Render cities (below capitols)
+        if (this.cities && this.cityNames) {
+            this._renderCities(ctx, bounds);
+        }
+        // Render capitol cities (on top)
+        if (this.capitols && this.capitolNames) {
+            this._renderCapitols(ctx, bounds);
         }
     }
     
@@ -287,7 +303,7 @@ _renderTerrainCells(ctx, bounds) {
     
     // 6. Draw smooth coastline border
     const borderColor = '#5A4A3A';
-    const lineWidth = Math.max(0.8, 1.5 / this.viewport.zoom);
+    const lineWidth = Math.max(0.5, 1.0 / this.viewport.zoom);
     this._drawSmoothCoastStroke(ctx, coastLoops, borderColor, lineWidth);
     
     this.metrics.visibleCells = visibleCount;
@@ -424,7 +440,7 @@ _renderPoliticalMap(ctx, bounds) {
         const borderEdges = this._collectKingdomBorderEdges();
         
         ctx.strokeStyle = 'rgba(90, 74, 58, 0.8)';
-        ctx.lineWidth = Math.max(1.5, 2.5 / this.viewport.zoom);
+        ctx.lineWidth = Math.max(0.5, 1.0 / this.viewport.zoom);
         ctx.lineCap = 'round';
         ctx.lineJoin = 'round';
         
@@ -451,7 +467,7 @@ _renderPoliticalMap(ctx, bounds) {
     
     // 7. Draw smooth coastline border
     const borderColor = '#5A4A3A';
-    const lineWidth = Math.max(0.8, 1.5 / this.viewport.zoom);
+    const lineWidth = Math.max(0.5, 1.0 / this.viewport.zoom);
     this._drawSmoothCoastStroke(ctx, coastLoops, borderColor, lineWidth);
 },
 
@@ -734,7 +750,7 @@ _renderLandmassMap(ctx, bounds) {
     
     // Draw smoothed coastline border
     ctx.strokeStyle = borderColor;
-    ctx.lineWidth = Math.max(0.8, 1.5 / this.viewport.zoom);
+    ctx.lineWidth = Math.max(0.5, 1.0 / this.viewport.zoom);
     ctx.lineJoin = 'round';
     ctx.lineCap = 'round';
     
@@ -1321,9 +1337,14 @@ _renderKingdomNames(ctx, bounds) {
     
     // Sort kingdoms by size (largest first - they get label priority)
     const kingdomOrder = [];
+    let totalCells = 0;
+    let maxKingdomSize = 0;
+    
     for (let k = 0; k < this.kingdomCount; k++) {
         const cellCount = this.kingdomCells[k] ? this.kingdomCells[k].length : 0;
         kingdomOrder.push({ index: k, size: cellCount });
+        totalCells += cellCount;
+        maxKingdomSize = Math.max(maxKingdomSize, cellCount);
     }
     kingdomOrder.sort((a, b) => b.size - a.size);
     
@@ -1376,9 +1397,13 @@ _renderKingdomNames(ctx, bounds) {
         const availWidth = spanWidth * 0.85;
         const availHeight = kingdomHeight * 0.4;
         
-        // Calculate font size to fit
-        const minFontSize = 12 / zoom;
-        const maxFontSize = 55 / zoom;
+        // Calculate font size based on kingdom size (relative to largest)
+        // Larger kingdoms get larger fonts, smaller kingdoms get smaller fonts
+        const sizeRatio = Math.sqrt(cellCount / maxKingdomSize); // Square root for gentler scaling
+        const baseFontSize = 10 + (sizeRatio * 28); // Range: 10-38 based on size (smaller, less dominant)
+        
+        const minFontSize = 6 / zoom;
+        const maxFontSize = baseFontSize / zoom;
         
         // Parse name to see if we have a two-line layout
         const { prefix, mainName } = this._parseKingdomName(name);
@@ -1386,7 +1411,7 @@ _renderKingdomNames(ctx, bounds) {
         
         // Find best font size
         let fontSize = maxFontSize;
-        ctx.font = `${fontSize}px 'IM Fell English', Georgia, serif`;
+        ctx.font = `500 ${fontSize}px 'Cinzel', 'IM Fell English', Georgia, serif`;
         
         let textWidth = ctx.measureText(displayText.toUpperCase()).width;
         
@@ -1402,12 +1427,85 @@ _renderKingdomNames(ctx, bounds) {
         }
         
         fontSize = Math.max(minFontSize, Math.min(maxFontSize, fontSize));
-        ctx.font = `${fontSize}px 'IM Fell English', Georgia, serif`;
+        ctx.font = `500 ${fontSize}px 'Cinzel', 'IM Fell English', Georgia, serif`;
         textWidth = ctx.measureText(displayText.toUpperCase()).width;
         
         // Use span center for better horizontal positioning
-        const textCenterX = spanCenterX;
-        const textCenterY = centerY;
+        let textCenterX = spanCenterX;
+        let textCenterY = centerY;
+        
+        // Calculate rough text bounds
+        const textHalfWidth = textWidth / 2 + fontSize * 0.5;
+        const textHalfHeight = fontSize * 1.2; // Account for two-line layout
+        const cityPadding = 15 / zoom;
+        
+        // Collect all city/capitol positions in this kingdom to avoid
+        const citiesToAvoid = [];
+        
+        // Add capitol
+        if (this.capitols && this.capitols[k] >= 0) {
+            const capitolCell = this.capitols[k];
+            citiesToAvoid.push({
+                x: this.points[capitolCell * 2],
+                y: this.points[capitolCell * 2 + 1],
+                padding: 20 / zoom  // Larger padding for capitol
+            });
+        }
+        
+        // Add regular cities in this kingdom
+        if (this.cities) {
+            for (const city of this.cities) {
+                if (city.kingdom === k) {
+                    citiesToAvoid.push({
+                        x: this.points[city.cell * 2],
+                        y: this.points[city.cell * 2 + 1],
+                        padding: cityPadding
+                    });
+                }
+            }
+        }
+        
+        // Check if text would overlap with any city and find best position
+        let needsShift = false;
+        let closestCity = null;
+        let closestDist = Infinity;
+        
+        for (const city of citiesToAvoid) {
+            const overlapsX = Math.abs(textCenterX - city.x) < textHalfWidth + city.padding;
+            const overlapsY = Math.abs(textCenterY - city.y) < textHalfHeight + city.padding;
+            
+            if (overlapsX && overlapsY) {
+                needsShift = true;
+                const dist = Math.sqrt((textCenterX - city.x) ** 2 + (textCenterY - city.y) ** 2);
+                if (dist < closestDist) {
+                    closestDist = dist;
+                    closestCity = city;
+                }
+            }
+        }
+        
+        if (needsShift && closestCity) {
+            // Shift text away from closest overlapping city
+            const spaceAbove = closestCity.y - minY;
+            const spaceBelow = maxY - closestCity.y;
+            
+            const shiftAmount = textHalfHeight + closestCity.padding + fontSize * 0.3;
+            
+            if (spaceAbove > spaceBelow && closestCity.y - shiftAmount > minY + textHalfHeight) {
+                textCenterY = closestCity.y - shiftAmount;
+            } else if (closestCity.y + shiftAmount < maxY - textHalfHeight) {
+                textCenterY = closestCity.y + shiftAmount;
+            } else {
+                const spaceLeft = closestCity.x - minX;
+                const spaceRight = maxX - closestCity.x;
+                
+                if (spaceRight > spaceLeft && closestCity.x + textHalfWidth + closestCity.padding < maxX) {
+                    textCenterX = closestCity.x + textHalfWidth + closestCity.padding;
+                } else if (closestCity.x - textHalfWidth - closestCity.padding > minX) {
+                    textCenterX = closestCity.x - textHalfWidth - closestCity.padding;
+                }
+            }
+        }
         
         // Calculate label bounding box for collision detection
         // Account for rotation by computing the axis-aligned bounding box of the rotated rectangle
@@ -1448,8 +1546,8 @@ _renderKingdomNames(ctx, bounds) {
             }
         }
         
-        // Skip this label if it would overlap
-        if (collides) continue;
+        // Always show names - don't skip even if overlapping
+        // if (collides) continue;
         
         // Add to placed labels
         placedLabels.push(labelBox);
@@ -1462,6 +1560,648 @@ _renderKingdomNames(ctx, bounds) {
         }
     }
 },
+
+/**
+ * Render capitol cities for each kingdom
+ */
+_renderCapitols(ctx, bounds) {
+    if (!this.capitols || !this.capitolNames) return;
+    
+    const zoom = this.viewport.zoom;
+    
+    for (let k = 0; k < this.kingdomCount; k++) {
+        const capitolCell = this.capitols[k];
+        const capitolName = this.capitolNames[k];
+        
+        if (capitolCell < 0 || !capitolName) continue;
+        
+        const x = this.points[capitolCell * 2];
+        const y = this.points[capitolCell * 2 + 1];
+        
+        // Skip if outside view
+        if (x < bounds.left - 50 || x > bounds.right + 50 ||
+            y < bounds.top - 50 || y > bounds.bottom + 50) continue;
+        
+        // Draw capitol marker (star shape)
+        const markerSize = Math.max(4, 8 / zoom);
+        
+        ctx.save();
+        
+        // Draw star marker
+        ctx.beginPath();
+        const spikes = 4;
+        const outerRadius = markerSize;
+        const innerRadius = markerSize * 0.4;
+        
+        for (let i = 0; i < spikes * 2; i++) {
+            const radius = i % 2 === 0 ? outerRadius : innerRadius;
+            const angle = (i * Math.PI / spikes) - Math.PI / 2;
+            const px = x + Math.cos(angle) * radius;
+            const py = y + Math.sin(angle) * radius;
+            if (i === 0) {
+                ctx.moveTo(px, py);
+            } else {
+                ctx.lineTo(px, py);
+            }
+        }
+        ctx.closePath();
+        
+        // Fill with dark color and light stroke
+        ctx.fillStyle = '#2C2416';
+        ctx.fill();
+        ctx.strokeStyle = 'rgba(255, 252, 245, 0.9)';
+        ctx.lineWidth = Math.max(0.5, 1.5 / zoom);
+        ctx.stroke();
+        
+        // Draw capitol name
+        const fontSize = Math.max(6, 11 / zoom);
+        ctx.font = `italic ${fontSize}px 'IM Fell English', Georgia, serif`;
+        ctx.textAlign = 'left';
+        ctx.textBaseline = 'middle';
+        
+        const textX = x + markerSize + 3 / zoom;
+        const textY = y;
+        
+        // Soft halo for legibility
+        const shadowLayers = [
+            { blur: 3, alpha: 0.4 },
+            { blur: 2, alpha: 0.6 },
+            { blur: 1, alpha: 0.8 }
+        ];
+        for (const layer of shadowLayers) {
+            ctx.shadowColor = `rgba(255, 252, 245, ${layer.alpha})`;
+            ctx.shadowBlur = layer.blur;
+            ctx.fillStyle = 'rgba(255, 252, 245, 0.85)';
+            ctx.fillText(capitolName, textX, textY);
+        }
+        ctx.shadowColor = 'transparent';
+        ctx.shadowBlur = 0;
+        ctx.fillStyle = '#2C2416';
+        ctx.fillText(capitolName, textX, textY);
+        
+        ctx.restore();
+    }
+},
+
+/**
+ * Render cities (non-capitol settlements)
+ */
+_renderCities(ctx, bounds) {
+    if (!this.cities || !this.cityNames) return;
+    
+    const zoom = this.viewport.zoom;
+    
+    for (let i = 0; i < this.cities.length; i++) {
+        const city = this.cities[i];
+        const cityName = this.cityNames[i];
+        
+        if (!city || city.cell < 0) continue;
+        
+        const x = this.points[city.cell * 2];
+        const y = this.points[city.cell * 2 + 1];
+        
+        // Skip if outside view
+        if (x < bounds.left - 50 || x > bounds.right + 50 ||
+            y < bounds.top - 50 || y > bounds.bottom + 50) continue;
+        
+        const markerSize = Math.max(2.5, 5 / zoom);
+        
+        ctx.save();
+        
+        // Draw different markers based on city type
+        if (city.type === 'port') {
+            // Port: circle with anchor-like cross
+            const r = markerSize * 0.6;
+            ctx.beginPath();
+            ctx.arc(x, y, r, 0, Math.PI * 2);
+            ctx.fillStyle = '#2C2416';
+            ctx.fill();
+            ctx.strokeStyle = 'rgba(255, 252, 245, 0.9)';
+            ctx.lineWidth = Math.max(0.5, 1.2 / zoom);
+            ctx.stroke();
+            // Small anchor cross
+            ctx.beginPath();
+            ctx.moveTo(x, y - r * 0.5);
+            ctx.lineTo(x, y + r * 0.6);
+            ctx.moveTo(x - r * 0.4, y + r * 0.2);
+            ctx.lineTo(x + r * 0.4, y + r * 0.2);
+            ctx.strokeStyle = 'rgba(255, 252, 245, 0.9)';
+            ctx.lineWidth = Math.max(0.3, 0.8 / zoom);
+            ctx.stroke();
+        } else if (city.type === 'fortress') {
+            // Fortress: square with crenellations feel
+            const half = markerSize * 0.55;
+            ctx.fillStyle = '#2C2416';
+            ctx.fillRect(x - half, y - half, half * 2, half * 2);
+            ctx.strokeStyle = 'rgba(255, 252, 245, 0.9)';
+            ctx.lineWidth = Math.max(0.5, 1.2 / zoom);
+            ctx.strokeRect(x - half, y - half, half * 2, half * 2);
+        } else {
+            // Town: simple circle
+            ctx.beginPath();
+            ctx.arc(x, y, markerSize * 0.5, 0, Math.PI * 2);
+            ctx.fillStyle = '#2C2416';
+            ctx.fill();
+            ctx.strokeStyle = 'rgba(255, 252, 245, 0.8)';
+            ctx.lineWidth = Math.max(0.4, 1 / zoom);
+            ctx.stroke();
+        }
+        
+        // Draw city name (smaller than capitol)
+        const fontSize = Math.max(5, 9 / zoom);
+        ctx.font = `italic ${fontSize}px 'IM Fell English', Georgia, serif`;
+        ctx.textAlign = 'left';
+        ctx.textBaseline = 'middle';
+        
+        const textX = x + markerSize + 2 / zoom;
+        const textY = y;
+        
+        // Soft halo for legibility
+        const shadowLayers = [
+            { blur: 2, alpha: 0.5 },
+            { blur: 1, alpha: 0.7 }
+        ];
+        for (const layer of shadowLayers) {
+            ctx.shadowColor = `rgba(255, 252, 245, ${layer.alpha})`;
+            ctx.shadowBlur = layer.blur;
+            ctx.fillStyle = 'rgba(255, 252, 245, 0.8)';
+            ctx.fillText(cityName, textX, textY);
+        }
+        ctx.shadowColor = 'transparent';
+        ctx.shadowBlur = 0;
+        ctx.fillStyle = '#3D3425';
+        ctx.fillText(cityName, textX, textY);
+        
+        ctx.restore();
+    }
+},
+
+/**
+ * Render roads connecting cities
+ */
+_renderRoads(ctx, bounds) {
+    if (!this.roads || this.roads.length === 0) return;
+    
+    const zoom = this.viewport.zoom;
+    
+    // Collect all unique segments first
+    const drawnSegments = new Set();
+    const segments = [];
+    
+    for (const road of this.roads) {
+        const path = road.path;
+        if (!path || path.length < 2) continue;
+        
+        // Check if road is in view
+        let inView = false;
+        for (const p of path) {
+            if (p.x >= bounds.left - 50 && p.x <= bounds.right + 50 &&
+                p.y >= bounds.top - 50 && p.y <= bounds.bottom + 50) {
+                inView = true;
+                break;
+            }
+        }
+        if (!inView) continue;
+        
+        for (let i = 0; i < path.length - 1; i++) {
+            const p1 = path[i];
+            const p2 = path[i + 1];
+            
+            // Create segment key using cell indices
+            const c1 = p1.cell !== undefined ? p1.cell : `${Math.round(p1.x)},${Math.round(p1.y)}`;
+            const c2 = p2.cell !== undefined ? p2.cell : `${Math.round(p2.x)},${Math.round(p2.y)}`;
+            const segKey = c1 < c2 ? `${c1}|${c2}` : `${c2}|${c1}`;
+            
+            if (!drawnSegments.has(segKey)) {
+                drawnSegments.add(segKey);
+                segments.push({ 
+                    x1: p1.x, y1: p1.y, 
+                    x2: p2.x, y2: p2.y,
+                    k1: `${Math.round(p1.x)},${Math.round(p1.y)}`,
+                    k2: `${Math.round(p2.x)},${Math.round(p2.y)}`
+                });
+            }
+        }
+    }
+    
+    if (segments.length === 0) return;
+    
+    // Build connected paths from segments
+    const paths = this._buildRoadPaths(segments);
+    
+    ctx.save();
+    
+    const lineWidth = Math.max(1, 2 / zoom);
+    const dashSize = Math.max(3, 6 / zoom);
+    const gapSize = Math.max(2, 4 / zoom);
+    
+    ctx.strokeStyle = '#6B5A4A';
+    ctx.lineWidth = lineWidth;
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    ctx.setLineDash([dashSize, gapSize]);
+    
+    // Draw each connected path
+    for (const path of paths) {
+        if (path.length < 2) continue;
+        
+        ctx.beginPath();
+        ctx.moveTo(path[0].x, path[0].y);
+        
+        for (let i = 1; i < path.length; i++) {
+            ctx.lineTo(path[i].x, path[i].y);
+        }
+        
+        ctx.stroke();
+    }
+    
+    ctx.setLineDash([]);
+    ctx.restore();
+},
+
+/**
+ * Build connected paths from segments
+ */
+_buildRoadPaths(segments) {
+    if (segments.length === 0) return [];
+    
+    // Build adjacency map
+    const adjacency = new Map();
+    const usedSegments = new Set();
+    
+    for (let i = 0; i < segments.length; i++) {
+        const seg = segments[i];
+        
+        if (!adjacency.has(seg.k1)) adjacency.set(seg.k1, []);
+        if (!adjacency.has(seg.k2)) adjacency.set(seg.k2, []);
+        
+        adjacency.get(seg.k1).push({ idx: i, otherKey: seg.k2, x: seg.x2, y: seg.y2 });
+        adjacency.get(seg.k2).push({ idx: i, otherKey: seg.k1, x: seg.x1, y: seg.y1 });
+    }
+    
+    const paths = [];
+    
+    // Build paths starting from endpoints (degree 1 nodes)
+    for (const [key, neighbors] of adjacency) {
+        // Check if this is an endpoint with unused edges
+        const unusedNeighbors = neighbors.filter(n => !usedSegments.has(n.idx));
+        if (unusedNeighbors.length !== 1) continue;
+        
+        // Start building path from this endpoint
+        const seg = segments[unusedNeighbors[0].idx];
+        const path = [{ x: seg.k1 === key ? seg.x1 : seg.x2, y: seg.k1 === key ? seg.y1 : seg.y2 }];
+        
+        let currentKey = key;
+        
+        while (true) {
+            const neighbors = adjacency.get(currentKey) || [];
+            let found = false;
+            
+            for (const neighbor of neighbors) {
+                if (!usedSegments.has(neighbor.idx)) {
+                    usedSegments.add(neighbor.idx);
+                    path.push({ x: neighbor.x, y: neighbor.y });
+                    currentKey = neighbor.otherKey;
+                    found = true;
+                    break;
+                }
+            }
+            
+            if (!found) break;
+        }
+        
+        if (path.length >= 2) {
+            paths.push(path);
+        }
+    }
+    
+    // Handle any remaining segments (cycles or isolated)
+    for (let i = 0; i < segments.length; i++) {
+        if (usedSegments.has(i)) continue;
+        
+        const seg = segments[i];
+        usedSegments.add(i);
+        
+        const path = [{ x: seg.x1, y: seg.y1 }];
+        let currentKey = seg.k2;
+        path.push({ x: seg.x2, y: seg.y2 });
+        
+        // Try to extend
+        while (true) {
+            const neighbors = adjacency.get(currentKey) || [];
+            let found = false;
+            
+            for (const neighbor of neighbors) {
+                if (!usedSegments.has(neighbor.idx)) {
+                    usedSegments.add(neighbor.idx);
+                    path.push({ x: neighbor.x, y: neighbor.y });
+                    currentKey = neighbor.otherKey;
+                    found = true;
+                    break;
+                }
+            }
+            
+            if (!found) break;
+        }
+        
+        if (path.length >= 2) {
+            paths.push(path);
+        }
+    }
+    
+    return paths;
+},
+
+/**
+ * Interpolate road path using cardinal spline for smooth curves
+ */
+_interpolateRoadPath(path) {
+    if (path.length < 2) return path;
+    if (path.length === 2) {
+        // For 2 points, just return them as-is (straight line)
+        return path;
+    }
+    
+    const result = [];
+    const tension = 0.3; // Lower tension for subtler curves
+    const segments = 4; // Fewer interpolation points
+    
+    for (let i = 0; i < path.length - 1; i++) {
+        const p0 = path[Math.max(0, i - 1)];
+        const p1 = path[i];
+        const p2 = path[i + 1];
+        const p3 = path[Math.min(path.length - 1, i + 2)];
+        
+        if (i === 0) {
+            result.push({ x: p1.x, y: p1.y });
+        }
+        
+        for (let t = 1; t <= segments; t++) {
+            const s = t / segments;
+            const s2 = s * s;
+            const s3 = s2 * s;
+            
+            const t0 = -tension * s + 2 * tension * s2 - tension * s3;
+            const t1 = 1 + (tension - 3) * s2 + (2 - tension) * s3;
+            const t2 = tension * s + (3 - 2 * tension) * s2 + (tension - 2) * s3;
+            const t3 = -tension * s2 + tension * s3;
+            
+            const x = t0 * p0.x + t1 * p1.x + t2 * p2.x + t3 * p3.x;
+            const y = t0 * p0.y + t1 * p1.y + t2 * p2.y + t3 * p3.y;
+            
+            result.push({ x, y });
+        }
+    }
+    
+    return result;
+},
+
+/**
+ * Render proper contour lines using marching squares on a sampled grid
+ */
+_renderContourLines(ctx, bounds) {
+    if (!this.heights) return;
+    
+    const zoom = this.viewport.zoom;
+    
+    // Grid resolution - smaller = more detailed contours
+    const gridSize = Math.max(6, 10 / zoom);
+    
+    // Calculate grid dimensions
+    const gridWidth = Math.ceil((bounds.right - bounds.left) / gridSize) + 2;
+    const gridHeight = Math.ceil((bounds.bottom - bounds.top) / gridSize) + 2;
+    
+    // Sample heights onto grid
+    const grid = new Float32Array(gridWidth * gridHeight);
+    
+    for (let gy = 0; gy < gridHeight; gy++) {
+        for (let gx = 0; gx < gridWidth; gx++) {
+            const worldX = bounds.left + gx * gridSize;
+            const worldY = bounds.top + gy * gridSize;
+            
+            // Find nearest cell and interpolate height
+            const height = this._sampleHeightAt(worldX, worldY);
+            grid[gy * gridWidth + gx] = height;
+        }
+    }
+    
+    // Contour levels - closer intervals
+    const contourLevels = [100, 175, 250, 350, 450, 550, 700, 850, 1000, 1200, 1400, 1700, 2000, 2400, 2800];
+    
+    ctx.save();
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    
+    for (const level of contourLevels) {
+        const segments = [];
+        
+        // Marching squares for this level
+        for (let gy = 0; gy < gridHeight - 1; gy++) {
+            for (let gx = 0; gx < gridWidth - 1; gx++) {
+                // Get corner values
+                const tl = grid[gy * gridWidth + gx];
+                const tr = grid[gy * gridWidth + gx + 1];
+                const bl = grid[(gy + 1) * gridWidth + gx];
+                const br = grid[(gy + 1) * gridWidth + gx + 1];
+                
+                // Skip if any corner is underwater
+                if (tl < 0 || tr < 0 || bl < 0 || br < 0) continue;
+                
+                // Calculate case (which corners are above level)
+                let caseIndex = 0;
+                if (tl >= level) caseIndex |= 1;
+                if (tr >= level) caseIndex |= 2;
+                if (br >= level) caseIndex |= 4;
+                if (bl >= level) caseIndex |= 8;
+                
+                // Skip if all same (no contour crosses this cell)
+                if (caseIndex === 0 || caseIndex === 15) continue;
+                
+                // World coordinates of corners
+                const x0 = bounds.left + gx * gridSize;
+                const y0 = bounds.top + gy * gridSize;
+                const x1 = x0 + gridSize;
+                const y1 = y0 + gridSize;
+                
+                // Interpolate edge crossings
+                const lerp = (a, b, va, vb) => a + (level - va) / (vb - va) * (b - a);
+                
+                const top = { x: lerp(x0, x1, tl, tr), y: y0 };
+                const right = { x: x1, y: lerp(y0, y1, tr, br) };
+                const bottom = { x: lerp(x0, x1, bl, br), y: y1 };
+                const left = { x: x0, y: lerp(y0, y1, tl, bl) };
+                
+                // Add line segments based on case
+                switch (caseIndex) {
+                    case 1: case 14: segments.push([left, top]); break;
+                    case 2: case 13: segments.push([top, right]); break;
+                    case 3: case 12: segments.push([left, right]); break;
+                    case 4: case 11: segments.push([right, bottom]); break;
+                    case 5: // Saddle point
+                        segments.push([left, top]);
+                        segments.push([right, bottom]);
+                        break;
+                    case 6: case 9: segments.push([top, bottom]); break;
+                    case 7: case 8: segments.push([left, bottom]); break;
+                    case 10: // Saddle point
+                        segments.push([top, right]);
+                        segments.push([left, bottom]);
+                        break;
+                }
+            }
+        }
+        
+        if (segments.length === 0) continue;
+        
+        // Connect segments into paths
+        const paths = this._connectContourSegments(segments);
+        
+        // Style - subtle brown lines
+        const isMajor = level % 500 === 0;
+        ctx.strokeStyle = isMajor ? 'rgba(100, 80, 60, 0.16)' : 'rgba(100, 80, 60, 0.09)';
+        ctx.lineWidth = isMajor ? Math.max(0.5, 1.0 / zoom) : Math.max(0.3, 0.7 / zoom);
+        
+        // Draw paths
+        ctx.beginPath();
+        for (const path of paths) {
+            if (path.length < 2) continue;
+            
+            ctx.moveTo(path[0].x, path[0].y);
+            
+            // Smooth with quadratic curves
+            if (path.length > 2) {
+                for (let i = 1; i < path.length - 1; i++) {
+                    const xc = (path[i].x + path[i + 1].x) / 2;
+                    const yc = (path[i].y + path[i + 1].y) / 2;
+                    ctx.quadraticCurveTo(path[i].x, path[i].y, xc, yc);
+                }
+            }
+            ctx.lineTo(path[path.length - 1].x, path[path.length - 1].y);
+        }
+        ctx.stroke();
+    }
+    
+    ctx.restore();
+},
+
+/**
+ * Sample height at a world position using spatial grid lookup
+ */
+_sampleHeightAt(x, y) {
+    // Quick bounds check
+    if (x < 0 || x > this.width || y < 0 || y > this.height) {
+        return -1000;
+    }
+    
+    // Use Delaunay to find containing triangle (fast point location)
+    const cellIdx = this.delaunay.find(x, y);
+    if (cellIdx < 0 || cellIdx >= this.cellCount) {
+        return -1000;
+    }
+    
+    // Get height of nearest cell and its neighbors for interpolation
+    const h0 = this.heights[cellIdx];
+    const neighbors = this.getNeighbors(cellIdx);
+    
+    if (neighbors.length < 2) {
+        return h0;
+    }
+    
+    // Weighted average based on distance
+    const cx = this.points[cellIdx * 2];
+    const cy = this.points[cellIdx * 2 + 1];
+    const d0 = Math.sqrt((x - cx) * (x - cx) + (y - cy) * (y - cy)) + 0.1;
+    
+    let totalWeight = 1 / d0;
+    let weightedHeight = h0 / d0;
+    
+    for (const ni of neighbors) {
+        const nx = this.points[ni * 2];
+        const ny = this.points[ni * 2 + 1];
+        const dist = Math.sqrt((x - nx) * (x - nx) + (y - ny) * (y - ny)) + 0.1;
+        const weight = 1 / dist;
+        
+        weightedHeight += this.heights[ni] * weight;
+        totalWeight += weight;
+    }
+    
+    return weightedHeight / totalWeight;
+},
+
+/**
+ * Connect contour segments into continuous paths
+ */
+_connectContourSegments(segments) {
+    if (segments.length === 0) return [];
+    
+    const paths = [];
+    const used = new Array(segments.length).fill(false);
+    const tolerance = 0.5;
+    
+    const dist = (a, b) => Math.abs(a.x - b.x) + Math.abs(a.y - b.y);
+    
+    for (let i = 0; i < segments.length; i++) {
+        if (used[i]) continue;
+        
+        const path = [...segments[i]];
+        used[i] = true;
+        
+        // Extend forward
+        let extended = true;
+        while (extended) {
+            extended = false;
+            const end = path[path.length - 1];
+            
+            for (let j = 0; j < segments.length; j++) {
+                if (used[j]) continue;
+                
+                const seg = segments[j];
+                if (dist(end, seg[0]) < tolerance) {
+                    path.push(seg[1]);
+                    used[j] = true;
+                    extended = true;
+                    break;
+                } else if (dist(end, seg[1]) < tolerance) {
+                    path.push(seg[0]);
+                    used[j] = true;
+                    extended = true;
+                    break;
+                }
+            }
+        }
+        
+        // Extend backward
+        extended = true;
+        while (extended) {
+            extended = false;
+            const start = path[0];
+            
+            for (let j = 0; j < segments.length; j++) {
+                if (used[j]) continue;
+                
+                const seg = segments[j];
+                if (dist(start, seg[1]) < tolerance) {
+                    path.unshift(seg[0]);
+                    used[j] = true;
+                    extended = true;
+                    break;
+                } else if (dist(start, seg[0]) < tolerance) {
+                    path.unshift(seg[1]);
+                    used[j] = true;
+                    extended = true;
+                    break;
+                }
+            }
+        }
+        
+        if (path.length >= 2) {
+            paths.push(path);
+        }
+    }
+    
+    return paths;
+},
+
 /**
  * Find the horizontal span of a kingdom at a given Y level
  */
@@ -1505,55 +2245,114 @@ _drawStraightKingdomText(ctx, name, centerX, centerY, fontSize, angle, zoom) {
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     
-    if (prefix && mainName) {
-        // Two-line layout: smaller italic prefix above, larger name below
-        const prefixFontSize = fontSize * 0.42;
-        const prefixY = -fontSize * 0.5;
-        const mainY = fontSize * 0.32;
-        
-        // Draw prefix (smaller, italic)
-        ctx.font = `italic ${prefixFontSize}px 'IM Fell English', Georgia, serif`;
-        this._drawMapText(ctx, prefix, 0, prefixY, zoom, false);
-        
-        // Draw main name (larger, uppercase)
-        ctx.font = `${fontSize}px 'IM Fell English', Georgia, serif`;
-        this._drawMapText(ctx, mainName.toUpperCase(), 0, mainY, zoom, true);
-    } else {
-        // Single line
-        ctx.font = `${fontSize}px 'IM Fell English', Georgia, serif`;
-        this._drawMapText(ctx, name.toUpperCase(), 0, 0, zoom, true);
-    }
+    // Always use two-line layout: smaller italic prefix above, larger name below
+    const prefixFontSize = fontSize * 0.42;
+    const prefixY = -fontSize * 0.5;
+    const mainY = fontSize * 0.32;
+    
+    // Draw prefix (smaller, italic)
+    ctx.font = `italic ${prefixFontSize}px 'IM Fell English', Georgia, serif`;
+    this._drawMapText(ctx, prefix, 0, prefixY, zoom, false);
+    
+    // Draw main name (larger, uppercase with Cinzel)
+    ctx.font = `500 ${fontSize}px 'Cinzel', 'IM Fell English', Georgia, serif`;
+    this._drawMapText(ctx, mainName.toUpperCase(), 0, mainY, zoom, true);
     
     ctx.restore();
 },
 
 /**
- * Draw text with simple styling - just stroke outline and fill
+ * Draw text with elegant antique map styling
+ * Uses soft shadow halo instead of harsh stroke
  */
 _drawMapText(ctx, text, x, y, zoom, isMain) {
-    // Simple stroke outline for readability
-    ctx.strokeStyle = 'rgba(255, 250, 240, 0.9)';
-    ctx.lineWidth = isMain ? 3 : 2;
-    ctx.lineJoin = 'round';
-    ctx.lineCap = 'round';
-    ctx.strokeText(text, x, y);
+    const shadowColor = 'rgba(255, 252, 245, 0.85)';
+    const textColor = '#2C2416';
     
-    // Main text fill
-    ctx.fillStyle = '#1A1408';
+    ctx.save();
+    
+    if (isMain) {
+        // For main text: elegant soft halo with multiple layers
+        const layers = [
+            { blur: 8, alpha: 0.3 },
+            { blur: 5, alpha: 0.4 },
+            { blur: 3, alpha: 0.6 },
+            { blur: 2, alpha: 0.8 }
+        ];
+        
+        for (const layer of layers) {
+            ctx.shadowColor = `rgba(255, 252, 245, ${layer.alpha})`;
+            ctx.shadowBlur = layer.blur;
+            ctx.shadowOffsetX = 0;
+            ctx.shadowOffsetY = 0;
+            ctx.fillStyle = shadowColor;
+            ctx.fillText(text, x, y);
+        }
+    } else {
+        // For prefix: lighter, subtler halo
+        const layers = [
+            { blur: 4, alpha: 0.3 },
+            { blur: 2, alpha: 0.5 },
+            { blur: 1, alpha: 0.7 }
+        ];
+        
+        for (const layer of layers) {
+            ctx.shadowColor = `rgba(255, 252, 245, ${layer.alpha})`;
+            ctx.shadowBlur = layer.blur;
+            ctx.shadowOffsetX = 0;
+            ctx.shadowOffsetY = 0;
+            ctx.fillStyle = shadowColor;
+            ctx.fillText(text, x, y);
+        }
+    }
+    
+    // Clear shadow for crisp main text
+    ctx.shadowColor = 'transparent';
+    ctx.shadowBlur = 0;
+    
+    // Draw main text
+    ctx.fillStyle = textColor;
     ctx.fillText(text, x, y);
+    
+    ctx.restore();
 },
 
 /**
  * Parse kingdom name to extract prefix and main name
  */
 _parseKingdomName(name) {
+    // Sorted by length (longest first) to avoid partial matches
     const prefixes = [
-        'Kingdom of', 'Empire of', 'Republic of', 'Duchy of', 'Grand Duchy of',
-        'Principality of', 'Confederation of', 'United', 'Free City of',
-        'Realm of', 'Dominion of', 'Commonwealth of', 'Federation of',
-        'Sultanate of', 'Caliphate of', 'Khanate of', 'Shogunate of',
-        'Margraviate of', 'Landgraviate of', 'County of', 'Barony of',
-        'Holy', 'Greater', 'Lesser', 'Northern', 'Southern', 'Eastern', 'Western'
+        'Grand Duchy of',
+        'Principality of',
+        'Confederation of',
+        'Commonwealth of',
+        'Protectorate of',
+        'Margraviate of',
+        'Landgraviate of',
+        'Free City of',
+        'Federation of',
+        'Electorate of',
+        'Archduchy of',
+        'Sultanate of',
+        'Caliphate of',
+        'Shogunate of',
+        'Republic of',
+        'Dominion of',
+        'Province of',
+        'Kingdom of',
+        'Khanate of',
+        'County of',
+        'Barony of',
+        'Empire of',
+        'Throne of',
+        'Duchy of',
+        'Realm of',
+        'March of',
+        'Union of',
+        'Crown of',
+        'Lands of',
+        'House of'
     ];
     
     for (const prefix of prefixes) {
@@ -1565,79 +2364,117 @@ _parseKingdomName(name) {
         }
     }
     
-    return { prefix: null, mainName: name };
+    // Fallback: if no prefix found, use "Realm of" as default
+    return { prefix: 'Realm of', mainName: name };
 },
 
 /**
  * Draw curved text along the kingdom's natural spine
  */
 _drawCurvedKingdomText(ctx, name, centerX, centerY, fontSize, spanWidth, zoom, curveUp, cells, minX, maxX) {
-    // Find the kingdom's organic spine path by sampling cells
-    const spinePath = this._findKingdomSpine(cells, centerX, centerY, minX, maxX);
-    
-    // Parse name
+    // Parse name - always returns prefix and mainName
     const { prefix, mainName } = this._parseKingdomName(name);
-    const displayName = mainName || name;
     
-    // Calculate total path length
-    const pathLength = this._getPathLength(spinePath);
+    // Create a simple smooth bezier curve for the text path
+    const width = maxX - minX;
+    const curveHeight = width * 0.08; // Gentle curve
+    const curveDir = curveUp ? -1 : 1;
+    
+    // Quadratic bezier: start, control, end
+    const startX = minX + width * 0.1;
+    const endX = maxX - width * 0.1;
+    const midX = centerX;
+    
+    // Use the passed centerY (which may have been adjusted for capitol collision)
+    const avgY = centerY;
+    
+    const startY = avgY;
+    const endY = avgY;
+    const controlY = avgY + curveDir * curveHeight;
     
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     
-    // Draw prefix above main text if present
-    if (prefix) {
-        const prefixFontSize = fontSize * 0.42;
-        ctx.font = `italic ${prefixFontSize}px 'IM Fell English', Georgia, serif`;
-        
-        const offsetY = -fontSize * 0.85;
-        
-        // Draw prefix as single unit at center of path
-        const centerDist = pathLength / 2;
-        const pos = this._getPointAtDistance(spinePath, centerDist);
-        const angle = this._getAngleAtDistance(spinePath, centerDist);
-        
-        const perpX = Math.cos(angle + Math.PI/2) * offsetY;
-        const perpY = Math.sin(angle + Math.PI/2) * offsetY;
-        
-        ctx.save();
-        ctx.translate(pos.x + perpX, pos.y + perpY);
-        ctx.rotate(angle);
-        
-        // Simple outline + fill
-        ctx.strokeStyle = 'rgba(255, 250, 240, 0.9)';
-        ctx.lineWidth = 2;
-        ctx.lineJoin = 'round';
-        ctx.strokeText(prefix, 0, 0);
-        ctx.fillStyle = '#1A1408';
+    // Function to get point on quadratic bezier
+    const getBezierPoint = (t) => {
+        const mt = 1 - t;
+        return {
+            x: mt * mt * startX + 2 * mt * t * midX + t * t * endX,
+            y: mt * mt * startY + 2 * mt * t * controlY + t * t * endY
+        };
+    };
+    
+    // Function to get tangent angle on bezier
+    const getBezierAngle = (t) => {
+        const mt = 1 - t;
+        const dx = 2 * mt * (midX - startX) + 2 * t * (endX - midX);
+        const dy = 2 * mt * (controlY - startY) + 2 * t * (endY - controlY);
+        return Math.atan2(dy, dx);
+    };
+    
+    // Draw prefix above main text at center
+    const prefixFontSize = fontSize * 0.42;
+    ctx.font = `italic ${prefixFontSize}px 'IM Fell English', Georgia, serif`;
+    
+    const centerPos = getBezierPoint(0.5);
+    const centerAngle = getBezierAngle(0.5);
+    const prefixOffsetY = -fontSize * 0.85;
+    
+    const prefixPerpX = Math.cos(centerAngle + Math.PI/2) * prefixOffsetY;
+    const prefixPerpY = Math.sin(centerAngle + Math.PI/2) * prefixOffsetY;
+    
+    ctx.save();
+    ctx.translate(centerPos.x + prefixPerpX, centerPos.y + prefixPerpY);
+    ctx.rotate(centerAngle);
+    
+    // Elegant halo effect for prefix
+    const shadowLayers = [
+        { blur: 4, alpha: 0.3 },
+        { blur: 2, alpha: 0.5 },
+        { blur: 1, alpha: 0.7 }
+    ];
+    for (const layer of shadowLayers) {
+        ctx.shadowColor = `rgba(255, 252, 245, ${layer.alpha})`;
+        ctx.shadowBlur = layer.blur;
+        ctx.fillStyle = 'rgba(255, 252, 245, 0.85)';
         ctx.fillText(prefix, 0, 0);
-        
-        ctx.restore();
     }
+    ctx.shadowColor = 'transparent';
+    ctx.shadowBlur = 0;
+    ctx.fillStyle = '#2C2416';
+    ctx.fillText(prefix, 0, 0);
     
-    // Draw main name - character by character along spine
-    ctx.font = `${fontSize}px 'IM Fell English', Georgia, serif`;
+    ctx.restore();
     
-    const mainText = displayName.toUpperCase();
+    // Draw main name - character by character along curve
+    ctx.font = `500 ${fontSize}px 'Cinzel', 'IM Fell English', Georgia, serif`;
+    
+    const mainText = mainName.toUpperCase();
     const chars = mainText.split('');
     const charWidths = chars.map(c => ctx.measureText(c).width);
     const totalWidth = charWidths.reduce((a, b) => a + b, 0);
-    
-    // Tight spacing between characters
-    const spacing = fontSize * 0.02;
+    const spacing = fontSize * 0.05;
     const totalWithSpacing = totalWidth + spacing * (chars.length - 1);
     
-    let currentDist = (pathLength - totalWithSpacing) / 2;
-    const mainOffsetY = prefix ? fontSize * 0.4 : 0;
+    // Calculate t range for text (centered on curve)
+    const curveLength = endX - startX; // Approximate
+    const textRatio = Math.min(0.9, totalWithSpacing / curveLength);
+    const startT = (1 - textRatio) / 2;
+    const tPerPixel = textRatio / totalWithSpacing;
+    
+    let currentT = startT;
+    const mainOffsetY = fontSize * 0.4;
     
     for (let i = 0; i < chars.length; i++) {
         const char = chars[i];
         const charWidth = charWidths[i];
-        const dist = currentDist + charWidth / 2;
-        const pos = this._getPointAtDistance(spinePath, dist);
-        const angle = this._getAngleAtDistance(spinePath, dist);
         
-        // Calculate perpendicular offset
+        // Get position at middle of character
+        const charT = currentT + (charWidth / 2) * tPerPixel;
+        const pos = getBezierPoint(charT);
+        const angle = getBezierAngle(charT);
+        
+        // Calculate perpendicular offset for main text (below prefix)
         const perpX = Math.cos(angle + Math.PI/2) * mainOffsetY;
         const perpY = Math.sin(angle + Math.PI/2) * mainOffsetY;
         
@@ -1645,17 +2482,27 @@ _drawCurvedKingdomText(ctx, name, centerX, centerY, fontSize, spanWidth, zoom, c
         ctx.translate(pos.x + perpX, pos.y + perpY);
         ctx.rotate(angle);
         
-        // Simple outline + fill
-        ctx.strokeStyle = 'rgba(255, 250, 240, 0.9)';
-        ctx.lineWidth = 3;
-        ctx.lineJoin = 'round';
-        ctx.strokeText(char, 0, 0);
-        ctx.fillStyle = '#1A1408';
+        // Elegant halo effect for each character
+        const charShadowLayers = [
+            { blur: 6, alpha: 0.3 },
+            { blur: 4, alpha: 0.4 },
+            { blur: 2, alpha: 0.6 },
+            { blur: 1, alpha: 0.8 }
+        ];
+        for (const layer of charShadowLayers) {
+            ctx.shadowColor = `rgba(255, 252, 245, ${layer.alpha})`;
+            ctx.shadowBlur = layer.blur;
+            ctx.fillStyle = 'rgba(255, 252, 245, 0.85)';
+            ctx.fillText(char, 0, 0);
+        }
+        ctx.shadowColor = 'transparent';
+        ctx.shadowBlur = 0;
+        ctx.fillStyle = '#2C2416';
         ctx.fillText(char, 0, 0);
         
         ctx.restore();
         
-        currentDist += charWidth + spacing;
+        currentT += (charWidth + spacing) * tPerPixel;
     }
 },
 /**
@@ -2434,7 +3281,7 @@ _renderPrecipitationCells(ctx, bounds) {
     
     // 5. Draw smooth coastline border
     const borderColor = '#5A4A3A';
-    const lineWidth = Math.max(0.8, 1.5 / this.viewport.zoom);
+    const lineWidth = Math.max(0.5, 1.0 / this.viewport.zoom);
     this._drawSmoothCoastStroke(ctx, coastLoops, borderColor, lineWidth);
     
     this.metrics.visibleCells = visibleCount;
@@ -3158,7 +4005,7 @@ _renderContourTerrain(ctx, bounds, isGrayscale) {
     
     // 5. Draw smooth coastline border
     const borderColor = '#5A4A3A';
-    const lineWidth = Math.max(0.8, 1.5 / this.viewport.zoom);
+    const lineWidth = Math.max(0.5, 1.0 / this.viewport.zoom);
     this._drawSmoothCoastStroke(ctx, coastLoops, borderColor, lineWidth);
     
     this.metrics.visibleCells = this.cellCount;

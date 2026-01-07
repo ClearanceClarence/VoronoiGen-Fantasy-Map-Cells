@@ -969,11 +969,14 @@ export class VoronoiGenerator {
      * Uses competitive flood fill from random seed points
      * Islands are assigned to nearest kingdom by distance
      */
-    generateKingdoms(numKingdoms = 12) {
+    generateKingdoms(numKingdoms = 12, roadDensity = 5) {
         if (!this.heights) {
             console.warn('No heightmap - generate terrain first');
             return;
         }
+        
+        // Store road density for use in city/road generation
+        this.roadDensity = roadDensity;
         
         console.log(`Generating ${numKingdoms} kingdoms with natural borders...`);
         
@@ -1110,12 +1113,9 @@ export class VoronoiGenerator {
             }
         }
         
-        // Handle tiny landmasses - assign to nearest existing kingdom (not their own)
+        // Handle tiny landmasses - assign to nearest kingdom on a DIFFERENT landmass
+        // This ensures islands belong to the closest mainland kingdom
         for (const landmass of tinyLandmasses) {
-            // Find nearest kingdom by checking all cells with assigned kingdoms
-            let nearestKingdom = -1;
-            let nearestDist = Infinity;
-            
             // Get centroid of this tiny landmass
             let cx = 0, cy = 0;
             for (const cell of landmass.cells) {
@@ -1125,9 +1125,17 @@ export class VoronoiGenerator {
             cx /= landmass.cells.length;
             cy /= landmass.cells.length;
             
-            // Find nearest assigned cell
+            // Find nearest assigned cell that is on a DIFFERENT landmass
+            let nearestKingdom = -1;
+            let nearestDist = Infinity;
+            
             for (let i = 0; i < this.cellCount; i++) {
                 if (this.kingdoms[i] < 0) continue;
+                // Must be on a different landmass (not same island)
+                if (landmassId[i] === landmass.id) continue;
+                // Must be land
+                if (this.heights[i] < ELEVATION.SEA_LEVEL) continue;
+                
                 const x = this.points[i * 2];
                 const y = this.points[i * 2 + 1];
                 const dist = (x - cx) ** 2 + (y - cy) ** 2;
@@ -1137,7 +1145,7 @@ export class VoronoiGenerator {
                 }
             }
             
-            // If no kingdom found yet (shouldn't happen), create one
+            // If no kingdom found (isolated island with no other land), create its own
             if (nearestKingdom < 0) {
                 nearestKingdom = kingdomIdx;
                 this.kingdomCapitals.push(landmass.cells[0]);
@@ -1151,7 +1159,7 @@ export class VoronoiGenerator {
         }
         
         // CRITICAL: Ensure ALL land cells are assigned to a kingdom
-        // Use distance-based assignment for any remaining unassigned cells
+        // First pass: assign from land neighbors
         for (let pass = 0; pass < 20; pass++) {
             let assignedThisPass = 0;
             
@@ -1159,30 +1167,12 @@ export class VoronoiGenerator {
                 if (this.heights[i] < ELEVATION.SEA_LEVEL) continue;
                 if (this.kingdoms[i] >= 0) continue;
                 
-                // First try: find assigned neighbor
+                // Find assigned LAND neighbor
                 let bestKingdom = -1;
                 for (const neighbor of this.voronoi.neighbors(i)) {
-                    if (this.kingdoms[neighbor] >= 0) {
+                    if (this.kingdoms[neighbor] >= 0 && this.heights[neighbor] >= ELEVATION.SEA_LEVEL) {
                         bestKingdom = this.kingdoms[neighbor];
                         break;
-                    }
-                }
-                
-                // Second try: find nearest assigned cell by distance
-                if (bestKingdom < 0) {
-                    const x = this.points[i * 2];
-                    const y = this.points[i * 2 + 1];
-                    let nearestDist = Infinity;
-                    
-                    for (let j = 0; j < this.cellCount; j++) {
-                        if (this.kingdoms[j] < 0) continue;
-                        const jx = this.points[j * 2];
-                        const jy = this.points[j * 2 + 1];
-                        const dist = (jx - x) ** 2 + (jy - y) ** 2;
-                        if (dist < nearestDist) {
-                            nearestDist = dist;
-                            bestKingdom = this.kingdoms[j];
-                        }
                     }
                 }
                 
@@ -1195,19 +1185,37 @@ export class VoronoiGenerator {
             if (assignedThisPass === 0) break;
         }
         
-        // Final check - count any still unassigned
-        let stillUnassigned = 0;
+        // Second pass: assign any remaining cells to nearest kingdom by distance
         for (let i = 0; i < this.cellCount; i++) {
-            if (this.heights[i] >= ELEVATION.SEA_LEVEL && this.kingdoms[i] < 0) {
-                stillUnassigned++;
-                // Force assign to kingdom 0 as last resort
-                if (kingdomIdx > 0) {
-                    this.kingdoms[i] = 0;
+            if (this.heights[i] < ELEVATION.SEA_LEVEL) continue;
+            if (this.kingdoms[i] >= 0) continue;
+            
+            const x = this.points[i * 2];
+            const y = this.points[i * 2 + 1];
+            let nearestDist = Infinity;
+            let nearestKingdom = -1;
+            
+            for (let j = 0; j < this.cellCount; j++) {
+                if (this.kingdoms[j] < 0) continue;
+                if (this.heights[j] < ELEVATION.SEA_LEVEL) continue; // Must be land
+                
+                const jx = this.points[j * 2];
+                const jy = this.points[j * 2 + 1];
+                const dist = (jx - x) ** 2 + (jy - y) ** 2;
+                if (dist < nearestDist) {
+                    nearestDist = dist;
+                    nearestKingdom = this.kingdoms[j];
                 }
             }
-        }
-        if (stillUnassigned > 0) {
-            console.warn(`Force-assigned ${stillUnassigned} cells to kingdom 0`);
+            
+            if (nearestKingdom >= 0) {
+                this.kingdoms[i] = nearestKingdom;
+            } else {
+                // Truly isolated - create new kingdom
+                this.kingdoms[i] = kingdomIdx;
+                this.kingdomCapitals.push(i);
+                kingdomIdx++;
+            }
         }
         
         // Smooth kingdom borders and remove exclaves - interleaved for best results
@@ -1257,6 +1265,9 @@ export class VoronoiGenerator {
         this.nameGenerator.reset();
         this.kingdomNames = this.nameGenerator.generateNames(this.kingdomCount, 'kingdom');
         
+        // Generate capitols for each kingdom
+        this._generateCapitols();
+        
         // Assign colors using graph coloring (no adjacent kingdoms share colors)
         this._assignKingdomColors();
         
@@ -1264,6 +1275,626 @@ export class VoronoiGenerator {
         this.clearKingdomCache();
         
         console.log(`Generated ${this.kingdomCount} kingdoms (requested ${numKingdoms})`);
+    }
+    
+    /**
+     * Generate capitol cities for each kingdom
+     * Capitols are placed in suitable locations (not on mountains, preferably low-mid elevation)
+     */
+    _generateCapitols() {
+        this.capitols = [];
+        this.capitolNames = [];
+        
+        for (let k = 0; k < this.kingdomCount; k++) {
+            const cells = this.kingdomCells[k];
+            if (!cells || cells.length === 0) {
+                this.capitols.push(-1);
+                this.capitolNames.push('');
+                continue;
+            }
+            
+            // Score each cell for capitol suitability
+            // Prefer: low-mid elevation, near center, near rivers, not coastal
+            let bestCell = -1;
+            let bestScore = -Infinity;
+            
+            const centroid = this.kingdomCentroids[k];
+            
+            // Calculate kingdom size for distance normalization
+            let maxDist = 0;
+            for (const cellIdx of cells) {
+                const x = this.points[cellIdx * 2];
+                const y = this.points[cellIdx * 2 + 1];
+                const dist = Math.sqrt((x - centroid.x) ** 2 + (y - centroid.y) ** 2);
+                maxDist = Math.max(maxDist, dist);
+            }
+            maxDist = maxDist || 1;
+            
+            for (const cellIdx of cells) {
+                const height = this.heights[cellIdx];
+                const x = this.points[cellIdx * 2];
+                const y = this.points[cellIdx * 2 + 1];
+                
+                // Skip water cells
+                if (height < ELEVATION.SEA_LEVEL) continue;
+                
+                let score = 0;
+                
+                // Elevation score: prefer low-mid elevation (100-1500m ideal)
+                // Penalize mountains heavily, slight penalty for very low coastal areas
+                if (height > 3000) {
+                    score -= 100; // Heavy penalty for mountains
+                } else if (height > 2000) {
+                    score -= 50;  // Penalty for high elevation
+                } else if (height > 1500) {
+                    score -= 20;  // Slight penalty
+                } else if (height > 500) {
+                    score += 30;  // Ideal mid elevation
+                } else if (height > 100) {
+                    score += 20;  // Good low elevation
+                } else {
+                    score += 5;   // Very low, possibly coastal
+                }
+                
+                // Distance from center: prefer central locations
+                const dist = Math.sqrt((x - centroid.x) ** 2 + (y - centroid.y) ** 2);
+                const normalizedDist = dist / maxDist;
+                score += (1 - normalizedDist) * 40; // Up to 40 points for being central
+                
+                // River proximity bonus - prefer NEAR rivers, not ON them
+                let isOnRiver = false;
+                let isNearRiver = false;
+                if (this.rivers) {
+                    for (const river of this.rivers) {
+                        if (!river.path) continue;
+                        for (const point of river.path) {
+                            const riverCellIdx = point.cell !== undefined ? point.cell : point;
+                            if (riverCellIdx === cellIdx) {
+                                isOnRiver = true;
+                                break;
+                            }
+                        }
+                        if (isOnRiver) break;
+                    }
+                    
+                    // Check if near a river (neighbor is river)
+                    if (!isOnRiver) {
+                        const neighbors = this.getNeighbors(cellIdx);
+                        for (const n of neighbors) {
+                            for (const river of this.rivers) {
+                                if (!river.path) continue;
+                                for (const point of river.path) {
+                                    const riverCellIdx = point.cell !== undefined ? point.cell : point;
+                                    if (riverCellIdx === n) {
+                                        isNearRiver = true;
+                                        break;
+                                    }
+                                }
+                                if (isNearRiver) break;
+                            }
+                            if (isNearRiver) break;
+                        }
+                    }
+                }
+                
+                // Skip cells directly on rivers
+                if (isOnRiver) continue;
+                
+                // Bonus for being near rivers
+                if (isNearRiver) {
+                    score += 30;
+                }
+                
+                // Check if coastal (has water neighbor) - slight penalty
+                const neighbors = this.getNeighbors(cellIdx);
+                let isCoastal = false;
+                for (const n of neighbors) {
+                    if (this.heights[n] < ELEVATION.SEA_LEVEL) {
+                        isCoastal = true;
+                        break;
+                    }
+                }
+                if (isCoastal) {
+                    score -= 10; // Slight penalty for coastal
+                }
+                
+                if (score > bestScore) {
+                    bestScore = score;
+                    bestCell = cellIdx;
+                }
+            }
+            
+            // Fallback: if no good cell found, use centroid-nearest land cell
+            if (bestCell < 0) {
+                let minDist = Infinity;
+                for (const cellIdx of cells) {
+                    if (this.heights[cellIdx] < ELEVATION.SEA_LEVEL) continue;
+                    const x = this.points[cellIdx * 2];
+                    const y = this.points[cellIdx * 2 + 1];
+                    const dist = Math.sqrt((x - centroid.x) ** 2 + (y - centroid.y) ** 2);
+                    if (dist < minDist) {
+                        minDist = dist;
+                        bestCell = cellIdx;
+                    }
+                }
+            }
+            
+            this.capitols.push(bestCell);
+        }
+        
+        // Generate capitol names (city type)
+        this.capitolNames = this.nameGenerator.generateNames(this.kingdomCount, 'city');
+        
+        // Generate additional cities for each kingdom
+        this._generateCities();
+    }
+    
+    /**
+     * Generate cities throughout each kingdom
+     * Number of cities based on kingdom size
+     */
+    _generateCities() {
+        this.cities = [];      // Array of {cell, kingdom, type}
+        this.cityNames = [];
+        
+        // Build a set of river cells and near-river cells
+        const riverCells = new Set();
+        const nearRiverCells = new Set();
+        if (this.rivers) {
+            for (const river of this.rivers) {
+                if (river.path) {
+                    for (const point of river.path) {
+                        const cellIdx = point.cell !== undefined ? point.cell : point;
+                        if (cellIdx >= 0) {
+                            riverCells.add(cellIdx);
+                            // Mark neighbors as near-river (good for cities)
+                            const neighbors = this.getNeighbors(cellIdx);
+                            for (const n of neighbors) {
+                                if (!riverCells.has(n) && this.heights[n] >= ELEVATION.SEA_LEVEL) {
+                                    nearRiverCells.add(n);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        
+        // Build set of coastal cells
+        const coastalCells = new Set();
+        for (let i = 0; i < this.cellCount; i++) {
+            if (this.heights[i] < ELEVATION.SEA_LEVEL) continue;
+            const neighbors = this.getNeighbors(i);
+            for (const n of neighbors) {
+                if (this.heights[n] < ELEVATION.SEA_LEVEL) {
+                    coastalCells.add(i);
+                    break;
+                }
+            }
+        }
+        
+        for (let k = 0; k < this.kingdomCount; k++) {
+            const cells = this.kingdomCells[k];
+            if (!cells || cells.length === 0) continue;
+            
+            const capitolCell = this.capitols[k];
+            const centroid = this.kingdomCentroids[k];
+            
+            // Calculate number of cities based on kingdom size and road density
+            // roadDensity 0 = minimal, 5 = normal, 10 = maximum
+            const density = this.roadDensity !== undefined ? this.roadDensity : 5;
+            if (density === 0) continue; // Skip cities entirely if density is 0
+            
+            const densityFactor = 0.5 + (density / 5); // 0.5 to 2.5 range
+            const baseNumCities = Math.floor(cells.length / 40); // More cities base (was 60)
+            const numCities = Math.min(20, Math.max(1, Math.floor(baseNumCities * densityFactor)));
+            
+            // Score all cells for city placement
+            const cellScores = [];
+            
+            for (const cellIdx of cells) {
+                const height = this.heights[cellIdx];
+                
+                // Skip water and very high mountains
+                if (height < ELEVATION.SEA_LEVEL) continue;
+                if (height > 3500) continue;
+                
+                // Skip if too close to capitol
+                if (capitolCell >= 0) {
+                    const capX = this.points[capitolCell * 2];
+                    const capY = this.points[capitolCell * 2 + 1];
+                    const x = this.points[cellIdx * 2];
+                    const y = this.points[cellIdx * 2 + 1];
+                    const distToCapitol = Math.sqrt((x - capX) ** 2 + (y - capY) ** 2);
+                    if (distToCapitol < 40) continue; // Minimum distance from capitol
+                }
+                
+                let score = 0;
+                const isCoastal = coastalCells.has(cellIdx);
+                const isOnRiver = riverCells.has(cellIdx);
+                const isNearRiver = nearRiverCells.has(cellIdx);
+                
+                // Skip cells that are directly on rivers (cities go beside rivers)
+                if (isOnRiver) continue;
+                
+                // Determine city type based on location
+                let cityType = 'town';
+                
+                if (isCoastal) {
+                    cityType = 'port';
+                    score += 30;
+                } else if (height > 1800) {
+                    cityType = 'fortress';
+                    score += 15; // Fortresses are less common
+                } else if (isNearRiver) {
+                    cityType = 'town';
+                    score += 40; // Near-river towns are valuable
+                }
+                
+                // Elevation scoring for towns
+                if (cityType === 'town') {
+                    if (height > 1200) {
+                        score += 5;
+                    } else if (height > 500) {
+                        score += 20; // Ideal
+                    } else if (height > 100) {
+                        score += 15;
+                    } else {
+                        score += 10;
+                    }
+                }
+                
+                // Some randomness to spread cities out
+                score += Math.random() * 25;
+                
+                cellScores.push({ cell: cellIdx, score, type: cityType });
+            }
+            
+            // Sort by score descending
+            cellScores.sort((a, b) => b.score - a.score);
+            
+            // Select cities ensuring minimum distance between them
+            // Distance scales inversely with density
+            const selectedCities = [];
+            const minCityDistance = Math.max(25, 50 - density * 2); // 30-50 range based on density
+            let portCount = 0;
+            let fortressCount = 0;
+            const maxPorts = Math.ceil(3 + density / 3); // 3-6 ports
+            const maxFortresses = Math.ceil(2 + density / 4); // 2-4 fortresses
+            
+            for (const candidate of cellScores) {
+                if (selectedCities.length >= numCities) break;
+                
+                // Check type limits
+                if (candidate.type === 'port' && portCount >= maxPorts) continue;
+                if (candidate.type === 'fortress' && fortressCount >= maxFortresses) continue;
+                
+                const x = this.points[candidate.cell * 2];
+                const y = this.points[candidate.cell * 2 + 1];
+                
+                // Check distance to already selected cities
+                let tooClose = false;
+                for (const existing of selectedCities) {
+                    const ex = this.points[existing.cell * 2];
+                    const ey = this.points[existing.cell * 2 + 1];
+                    const dist = Math.sqrt((x - ex) ** 2 + (y - ey) ** 2);
+                    if (dist < minCityDistance) {
+                        tooClose = true;
+                        break;
+                    }
+                }
+                
+                if (!tooClose) {
+                    selectedCities.push({
+                        cell: candidate.cell,
+                        kingdom: k,
+                        type: candidate.type
+                    });
+                    
+                    if (candidate.type === 'port') portCount++;
+                    if (candidate.type === 'fortress') fortressCount++;
+                }
+            }
+            
+            this.cities.push(...selectedCities);
+        }
+        
+        // Generate names for all cities
+        this.cityNames = this.nameGenerator.generateNames(this.cities.length, 'city');
+        
+        // Generate roads connecting cities
+        this._generateRoads();
+    }
+    
+    /**
+     * Generate roads connecting cities within kingdoms
+     * Creates a realistic road network ensuring all cities are connected
+     */
+    _generateRoads() {
+        this.roads = [];
+        
+        // Track cells that have roads to avoid overlaps
+        const roadCells = new Set();
+        
+        for (let k = 0; k < this.kingdomCount; k++) {
+            const capitolCell = this.capitols[k];
+            if (capitolCell < 0) continue;
+            
+            // Get all cities in this kingdom
+            const kingdomCities = this.cities.filter(c => c.kingdom === k);
+            if (kingdomCities.length === 0) continue;
+            
+            // Sort cities by distance to capitol
+            const capitolX = this.points[capitolCell * 2];
+            const capitolY = this.points[capitolCell * 2 + 1];
+            
+            kingdomCities.sort((a, b) => {
+                const ax = this.points[a.cell * 2];
+                const ay = this.points[a.cell * 2 + 1];
+                const bx = this.points[b.cell * 2];
+                const by = this.points[b.cell * 2 + 1];
+                const distA = Math.sqrt((ax - capitolX) ** 2 + (ay - capitolY) ** 2);
+                const distB = Math.sqrt((bx - capitolX) ** 2 + (by - capitolY) ** 2);
+                return distA - distB;
+            });
+            
+            // Track connected cities
+            const connectedCities = new Set([capitolCell]);
+            
+            // Connect ALL cities - each one to either capitol or nearest connected city
+            for (let i = 0; i < kingdomCities.length; i++) {
+                const city = kingdomCities[i];
+                const cityX = this.points[city.cell * 2];
+                const cityY = this.points[city.cell * 2 + 1];
+                
+                // Find nearest connected city/capitol
+                let nearestCell = capitolCell;
+                let nearestDist = Infinity;
+                
+                for (const connectedCell of connectedCities) {
+                    const cx = this.points[connectedCell * 2];
+                    const cy = this.points[connectedCell * 2 + 1];
+                    const dist = Math.sqrt((cx - cityX) ** 2 + (cy - cityY) ** 2);
+                    if (dist < nearestDist) {
+                        nearestDist = dist;
+                        nearestCell = connectedCell;
+                    }
+                }
+                
+                // Try to connect to nearest
+                let road = this._findRoadPath(nearestCell, city.cell, roadCells);
+                
+                // If no path found, try connecting directly to capitol
+                if (!road && nearestCell !== capitolCell) {
+                    road = this._findRoadPath(capitolCell, city.cell, roadCells);
+                }
+                
+                // If still no path, try other connected cities
+                if (!road) {
+                    for (const connectedCell of connectedCities) {
+                        if (connectedCell === nearestCell) continue;
+                        road = this._findRoadPath(connectedCell, city.cell, roadCells);
+                        if (road) break;
+                    }
+                }
+                
+                if (road && road.length >= 2) {
+                    const isMajor = nearestCell === capitolCell || i < 3;
+                    this.roads.push({
+                        path: road,
+                        kingdom: k,
+                        type: isMajor ? 'major' : 'minor'
+                    });
+                    this._markRoadCells(road, roadCells);
+                    connectedCities.add(city.cell);
+                }
+            }
+            
+            // Add cross-connections between nearby cities for higher density
+            const density = this.roadDensity !== undefined ? this.roadDensity : 5;
+            if (density >= 3 && kingdomCities.length >= 2) {
+                const maxCrossRoads = Math.floor((density - 2) * kingdomCities.length / 4);
+                let crossRoadCount = 0;
+                
+                for (let i = 0; i < kingdomCities.length && crossRoadCount < maxCrossRoads; i++) {
+                    const city1 = kingdomCities[i];
+                    const x1 = this.points[city1.cell * 2];
+                    const y1 = this.points[city1.cell * 2 + 1];
+                    
+                    for (let j = i + 1; j < kingdomCities.length && crossRoadCount < maxCrossRoads; j++) {
+                        const city2 = kingdomCities[j];
+                        const x2 = this.points[city2.cell * 2];
+                        const y2 = this.points[city2.cell * 2 + 1];
+                        
+                        const dist = Math.sqrt((x2 - x1) ** 2 + (y2 - y1) ** 2);
+                        const maxDist = 60 + density * 10; // 90-160 based on density
+                        
+                        if (dist < maxDist && dist > 30) {
+                            const road = this._findRoadPath(city1.cell, city2.cell, roadCells);
+                            if (road && road.length >= 2) {
+                                this.roads.push({
+                                    path: road,
+                                    kingdom: k,
+                                    type: 'minor'
+                                });
+                                this._markRoadCells(road, roadCells);
+                                crossRoadCount++;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    /**
+     * Mark cells along a road path as having roads
+     */
+    _markRoadCells(road, roadCells) {
+        // Use the cells array if available, otherwise extract from points
+        if (road.cells) {
+            for (const cell of road.cells) {
+                roadCells.add(cell);
+            }
+        } else {
+            for (const point of road) {
+                if (point.cell !== undefined) {
+                    roadCells.add(point.cell);
+                }
+            }
+        }
+    }
+    
+    /**
+     * Find a road path between two cells using A* pathfinding
+     * Avoids water and rivers, prefers paths alongside rivers and existing roads
+     */
+    _findRoadPath(startCell, endCell, existingRoadCells = null) {
+        const startX = this.points[startCell * 2];
+        const startY = this.points[startCell * 2 + 1];
+        const endX = this.points[endCell * 2];
+        const endY = this.points[endCell * 2 + 1];
+        
+        // Build set of river cells to avoid
+        const riverCells = new Set();
+        const nearRiverCells = new Set();
+        
+        if (this.rivers) {
+            for (const river of this.rivers) {
+                if (river.path) {
+                    for (const point of river.path) {
+                        // River path points have {x, y, cell, flow} format
+                        const cellIdx = point.cell !== undefined ? point.cell : point;
+                        if (cellIdx >= 0) {
+                            riverCells.add(cellIdx);
+                            // Mark neighbors as near-river (good for roads)
+                            const neighbors = this.getNeighbors(cellIdx);
+                            for (const n of neighbors) {
+                                if (!riverCells.has(n) && this.heights[n] >= ELEVATION.SEA_LEVEL) {
+                                    nearRiverCells.add(n);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        
+        // A* pathfinding
+        const openSet = new Map();
+        const closedSet = new Set();
+        const cameFrom = new Map();
+        const gScore = new Map();
+        const fScore = new Map();
+        
+        const heuristic = (cell) => {
+            const x = this.points[cell * 2];
+            const y = this.points[cell * 2 + 1];
+            return Math.sqrt((x - endX) ** 2 + (y - endY) ** 2);
+        };
+        
+        const getCost = (from, to) => {
+            const toHeight = this.heights[to];
+            
+            // Water is completely impassable
+            if (toHeight < ELEVATION.SEA_LEVEL) return Infinity;
+            
+            const x1 = this.points[from * 2];
+            const y1 = this.points[from * 2 + 1];
+            const x2 = this.points[to * 2];
+            const y2 = this.points[to * 2 + 1];
+            const baseDist = Math.sqrt((x2 - x1) ** 2 + (y2 - y1) ** 2);
+            
+            // Rivers can be crossed but with high cost (represents bridges)
+            let riverCost = 1;
+            if (riverCells.has(to)) {
+                riverCost = 5; // High cost to cross river
+            }
+            
+            // Elevation cost - prefer flat terrain, penalize steep climbs
+            const fromHeight = this.heights[from];
+            const elevDiff = Math.abs(toHeight - fromHeight);
+            const elevCost = 1 + (elevDiff / 500) * 2;
+            
+            // High mountain penalty
+            let mountainPenalty = 1;
+            if (toHeight > 2500) mountainPenalty = 3;
+            else if (toHeight > 2000) mountainPenalty = 2;
+            else if (toHeight > 1500) mountainPenalty = 1.5;
+            
+            // Bonus for being near rivers (good trade routes)
+            let riverBonus = 1;
+            if (nearRiverCells.has(to)) riverBonus = 0.7;
+            
+            // Strong bonus for existing roads (roads merge together)
+            let roadBonus = 1;
+            if (existingRoadCells && existingRoadCells.has(to)) roadBonus = 0.3;
+            
+            return baseDist * elevCost * mountainPenalty * riverBonus * roadBonus * riverCost;
+        };
+        
+        gScore.set(startCell, 0);
+        fScore.set(startCell, heuristic(startCell));
+        openSet.set(startCell, fScore.get(startCell));
+        
+        let iterations = 0;
+        const maxIterations = 10000;
+        
+        while (openSet.size > 0 && iterations < maxIterations) {
+            iterations++;
+            
+            // Get cell with lowest fScore
+            let current = null;
+            let lowestF = Infinity;
+            for (const [cell, f] of openSet) {
+                if (f < lowestF) {
+                    lowestF = f;
+                    current = cell;
+                }
+            }
+            
+            if (current === endCell) {
+                // Reconstruct path with cell indices for road marking
+                const path = [];
+                const cells = [];
+                let c = current;
+                while (c !== undefined) {
+                    path.unshift({
+                        x: this.points[c * 2],
+                        y: this.points[c * 2 + 1],
+                        cell: c
+                    });
+                    cells.unshift(c);
+                    c = cameFrom.get(c);
+                }
+                path.cells = cells; // Attach cell array to path
+                return path;
+            }
+            
+            openSet.delete(current);
+            closedSet.add(current);
+            
+            const neighbors = this.getNeighbors(current);
+            for (const neighbor of neighbors) {
+                if (closedSet.has(neighbor)) continue;
+                
+                const cost = getCost(current, neighbor);
+                if (cost === Infinity) continue;
+                
+                const tentativeG = gScore.get(current) + cost;
+                
+                if (!gScore.has(neighbor) || tentativeG < gScore.get(neighbor)) {
+                    cameFrom.set(neighbor, current);
+                    gScore.set(neighbor, tentativeG);
+                    const f = tentativeG + heuristic(neighbor);
+                    fScore.set(neighbor, f);
+                    openSet.set(neighbor, f);
+                }
+            }
+        }
+        
+        // No path found - return null (don't create a road that crosses water)
+        return null;
     }
     
     /**
@@ -1509,13 +2140,14 @@ export class VoronoiGenerator {
                 const myKingdom = this.kingdoms[i];
                 if (myKingdom < 0) continue;
                 
-                // Count neighboring kingdoms
+                // Count neighboring kingdoms (LAND cells only)
                 const neighborCounts = new Map();
                 let totalNeighbors = 0;
                 
                 for (const neighbor of this.voronoi.neighbors(i)) {
                     const nk = this.kingdoms[neighbor];
-                    if (nk >= 0) {
+                    // Only count land cells with assigned kingdoms
+                    if (nk >= 0 && this.heights[neighbor] >= ELEVATION.SEA_LEVEL) {
                         neighborCounts.set(nk, (neighborCounts.get(nk) || 0) + 1);
                         totalNeighbors++;
                     }
@@ -1556,6 +2188,7 @@ export class VoronoiGenerator {
     
     /**
      * Remove small exclaves - isolated cells of a kingdom
+     * Reassigns disconnected cells to nearest appropriate kingdom
      */
     _removeKingdomExclaves() {
         // Run multiple passes until no more exclaves exist
@@ -1597,11 +2230,11 @@ export class VoronoiGenerator {
                 
                 // Reassign each exclave cell to best neighboring kingdom
                 for (const i of exclaveCells) {
-                    // Find most common neighboring kingdom
+                    // Find most common neighboring kingdom (LAND cells only)
                     const neighborCounts = new Map();
                     for (const neighbor of this.voronoi.neighbors(i)) {
                         const nk = this.kingdoms[neighbor];
-                        if (nk >= 0 && nk !== k) {
+                        if (nk >= 0 && nk !== k && this.heights[neighbor] >= ELEVATION.SEA_LEVEL) {
                             neighborCounts.set(nk, (neighborCounts.get(nk) || 0) + 1);
                         }
                     }
@@ -1615,7 +2248,7 @@ export class VoronoiGenerator {
                         }
                     }
                     
-                    // If no land neighbors from other kingdoms, find nearest by distance
+                    // If no land neighbors from other kingdoms, find nearest land cell from another kingdom
                     if (bestKingdom < 0) {
                         const x = this.points[i * 2];
                         const y = this.points[i * 2 + 1];
@@ -1624,6 +2257,8 @@ export class VoronoiGenerator {
                         for (let j = 0; j < this.cellCount; j++) {
                             const jk = this.kingdoms[j];
                             if (jk < 0 || jk === k) continue;
+                            // Must be land
+                            if (this.heights[j] < ELEVATION.SEA_LEVEL) continue;
                             
                             const jx = this.points[j * 2];
                             const jy = this.points[j * 2 + 1];

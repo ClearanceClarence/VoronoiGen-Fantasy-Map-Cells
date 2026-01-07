@@ -1,23 +1,103 @@
 /**
- * Procedural Name Generator for Fantasy Maps
- * Generates unique names for kingdoms, counties, cities, regions, etc.
+ * Procedural Fantasy Name Generator
+ * Generates realistic-sounding names using linguistic rules and syllable patterns
+ * NO real place names - everything is procedurally generated
  */
 
 export class NameGenerator {
     constructor(seed = Date.now()) {
         this.seed = seed;
         this.usedNames = new Set();
+        this._initializeLinguisticRules();
     }
     
     /**
-     * Reset used names (call when generating a new map)
+     * Initialize syllable patterns and linguistic rules for different cultural flavors
+     */
+    _initializeLinguisticRules() {
+        // Simplified syllable components for more natural names
+        this.cultures = {
+            // Anglo/Germanic flavor
+            germanic: {
+                starts: ['Ald', 'Ash', 'Berg', 'Bran', 'Brynn', 'Cal', 'Cold', 'Crag', 'Dal', 'Dark', 'Deep', 'Dorn', 'Drak', 'Dun', 'East', 'Eld', 'Elm', 'Fair', 'Falk', 'Fen', 'Fern', 'Frost', 'Gold', 'Gram', 'Gran', 'Grey', 'Grim', 'Hald', 'Hart', 'Helm', 'High', 'Holm', 'Horn', 'Iron', 'Kar', 'Lang', 'Lorn', 'Mal', 'Mist', 'Moor', 'Neth', 'Nord', 'Orn', 'Rad', 'Rain', 'Raven', 'Red', 'Rim', 'Rock', 'Ros', 'Shal', 'Silver', 'Skal', 'Stark', 'Stein', 'Storm', 'Sund', 'Tal', 'Tarn', 'Thorn', 'Tor', 'Ulf', 'Val', 'Wald', 'West', 'White', 'Wild', 'Win', 'Wind', 'Wolf', 'Wulf', 'Wyrm'],
+                endings: ['heim', 'wald', 'burg', 'gard', 'mark', 'holm', 'dal', 'fell', 'ford', 'sted', 'by', 'wick', 'ton', 'ham', 'land', 'berg', 'feld', 'holt', 'wood', 'moor', 'vale', 'haven', 'hold', 'firth', 'mere', 'crest', 'gate', 'hall', 'keep', 'reach', 'shore', 'watch', 'ward', 'ridge', 'cliff', 'stone', 'brook', 'bridge', 'mouth'],
+                weight: 28
+            },
+            
+            // Celtic/Gaelic flavor
+            celtic: {
+                starts: ['Aber', 'Ard', 'Bal', 'Ban', 'Bel', 'Ben', 'Blair', 'Bran', 'Bren', 'Caer', 'Carn', 'Conn', 'Cor', 'Cul', 'Dal', 'Derry', 'Drum', 'Dun', 'Eil', 'Fal', 'Fin', 'Glen', 'Gorm', 'Gwyn', 'Inver', 'Kel', 'Ken', 'Kil', 'Kin', 'Lach', 'Lan', 'Leth', 'Loch', 'Mal', 'Mor', 'Mull', 'Nev', 'Owen', 'Pen', 'Rath', 'Ros', 'Shan', 'Sil', 'Strath', 'Tal', 'Tir', 'Tor', 'Tull', 'Wyn'],
+                endings: ['ach', 'agh', 'an', 'ane', 'ar', 'ard', 'awn', 'dor', 'dun', 'ell', 'enn', 'gan', 'glen', 'gorm', 'gwen', 'iel', 'ish', 'lin', 'loch', 'lyn', 'mor', 'more', 'ness', 'och', 'oran', 'owen', 'rath', 'reen', 'rick', 'ros', 'wen', 'wyn', 'dale', 'mere', 'vale', 'wood', 'moor'],
+                weight: 20
+            },
+            
+            // Romance/Latin flavor
+            romance: {
+                starts: ['Al', 'Alta', 'Aqua', 'Aran', 'Aur', 'Bel', 'Bran', 'Cal', 'Cara', 'Cas', 'Clar', 'Cor', 'Costa', 'Del', 'Dor', 'Fal', 'Fer', 'Flor', 'Font', 'Gran', 'Leon', 'Lor', 'Luc', 'Luna', 'Mar', 'Mel', 'Mir', 'Mont', 'Mor', 'Nov', 'Pal', 'Per', 'Pont', 'Port', 'Prim', 'Ros', 'Sal', 'San', 'Ser', 'Sil', 'Sol', 'Ter', 'Tor', 'Val', 'Var', 'Ver', 'Vir', 'Vit'],
+                endings: ['a', 'ia', 'ana', 'ena', 'ina', 'ona', 'ara', 'era', 'ora', 'ura', 'enza', 'essa', 'etta', 'ella', 'enne', 'erre', 'esse', 'mont', 'pont', 'fort', 'val', 'mar', 'sol', 'anto', 'ento', 'esto', 'anno', 'orre', 'aine', 'onne', 'eux'],
+                weight: 18
+            },
+            
+            // Slavic flavor
+            slavic: {
+                starts: ['Bel', 'Bor', 'Bran', 'Cher', 'Dob', 'Dor', 'Drag', 'Gor', 'Grad', 'Grom', 'Kar', 'Kiev', 'Kras', 'Kur', 'Mal', 'Mir', 'Morav', 'Nov', 'Pol', 'Rad', 'Ros', 'Siv', 'Slav', 'Smo', 'Star', 'Stol', 'Svet', 'Tver', 'Vel', 'Vlad', 'Vol', 'Vor', 'Yar', 'Zar', 'Zel', 'Zol', 'Zor'],
+                endings: ['av', 'ava', 'evo', 'ova', 'sk', 'ska', 'sko', 'ice', 'itz', 'ec', 'ak', 'ek', 'ik', 'ok', 'uk', 'in', 'yn', 'mir', 'slav', 'grad', 'gorod', 'pol', 'nov', 'dor', 'gor', 'vor', 'ansk', 'insk', 'ovka', 'evka', 'holm', 'berg'],
+                weight: 14
+            },
+            
+            // Greek/Hellenic flavor
+            hellenic: {
+                starts: ['Acr', 'Aeg', 'Alc', 'Andr', 'Apol', 'Arc', 'Arg', 'Ath', 'Chal', 'Chry', 'Del', 'Dion', 'Dor', 'Eph', 'Hel', 'Her', 'Kal', 'Kor', 'Leon', 'Lyc', 'Mac', 'Meg', 'Myr', 'Nik', 'Olym', 'Pal', 'Pel', 'Per', 'Phil', 'Pol', 'Pyth', 'Rho', 'Sal', 'Spar', 'Stag', 'Theb', 'Ther', 'Thes', 'Tyr', 'Xan', 'Zak'],
+                endings: ['os', 'us', 'is', 'as', 'es', 'on', 'ion', 'eon', 'a', 'ia', 'ea', 'eia', 'aia', 'polis', 'dros', 'thos', 'kos', 'nos', 'ros', 'sos', 'tos', 'ene', 'one', 'ane', 'ine', 'ora', 'ara', 'era', 'andria', 'onia', 'opia'],
+                weight: 12
+            },
+            
+            // Eastern/Arabic flavor
+            eastern: {
+                starts: ['Al', 'Ash', 'Bah', 'Dar', 'Fah', 'Gha', 'Haz', 'Isf', 'Jaz', 'Kha', 'Mah', 'Mar', 'Mir', 'Nah', 'Qar', 'Rah', 'Sah', 'Sal', 'Sam', 'Sar', 'Sha', 'Sul', 'Tab', 'Tar', 'Zah', 'Zam', 'Zar'],
+                endings: ['an', 'ar', 'ad', 'ah', 'am', 'as', 'at', 'az', 'en', 'er', 'id', 'in', 'ir', 'is', 'un', 'ur', 'abad', 'istan', 'khan', 'pur', 'zar', 'dar', 'nar', 'mar', 'var', 'and', 'esh', 'aq', 'iq'],
+                weight: 8
+            }
+        };
+        
+        // Government types - all "X of" format
+        this.governmentTypes = [
+            { prefix: 'Kingdom of ', weight: 30 },
+            { prefix: 'Duchy of ', weight: 18 },
+            { prefix: 'Republic of ', weight: 10 },
+            { prefix: 'Grand Duchy of ', weight: 8 },
+            { prefix: 'Principality of ', weight: 8 },
+            { prefix: 'Empire of ', weight: 6 },
+            { prefix: 'Realm of ', weight: 12 },
+            { prefix: 'Dominion of ', weight: 5 },
+            { prefix: 'Crown of ', weight: 5 },
+            { prefix: 'Archduchy of ', weight: 4 },
+            { prefix: 'County of ', weight: 6 },
+            { prefix: 'Barony of ', weight: 4 },
+            { prefix: 'March of ', weight: 4 },
+            { prefix: 'Free City of ', weight: 3 },
+            { prefix: 'Commonwealth of ', weight: 3 },
+            { prefix: 'Confederation of ', weight: 3 },
+            { prefix: 'Sultanate of ', weight: 3 },
+            { prefix: 'Khanate of ', weight: 3 },
+            { prefix: 'Province of ', weight: 4 },
+            { prefix: 'Throne of ', weight: 2 },
+            { prefix: 'House of ', weight: 3 }
+        ];
+        
+        this.totalGovWeight = this.governmentTypes.reduce((sum, g) => sum + g.weight, 0);
+        this.totalCultureWeight = Object.values(this.cultures).reduce((sum, c) => sum + c.weight, 0);
+    }
+    
+    /**
+     * Reset used names
      */
     reset() {
         this.usedNames.clear();
     }
     
     /**
-     * Simple seeded random number generator
+     * Seeded random number generator
      */
     _random() {
         this.seed = (this.seed * 1103515245 + 12345) & 0x7fffffff;
@@ -32,7 +112,100 @@ export class NameGenerator {
     }
     
     /**
-     * Generate multiple unique names of a given type
+     * Pick weighted random culture
+     */
+    _pickCulture() {
+        let random = this._random() * this.totalCultureWeight;
+        for (const [name, culture] of Object.entries(this.cultures)) {
+            random -= culture.weight;
+            if (random <= 0) return culture;
+        }
+        return this.cultures.germanic;
+    }
+    
+    /**
+     * Pick weighted random government type
+     */
+    _pickGovernment() {
+        let random = this._random() * this.totalGovWeight;
+        for (const gov of this.governmentTypes) {
+            random -= gov.weight;
+            if (random <= 0) return gov;
+        }
+        return this.governmentTypes[0];
+    }
+    
+    /**
+     * Generate a single syllable
+     */
+    _generateSyllable(culture, position = 'middle') {
+        // Not used in new approach
+        return '';
+    }
+    
+    /**
+     * Generate a base place name using start + ending
+     */
+    _generateBaseName() {
+        const culture = this._pickCulture();
+        
+        // Pick a start and ending
+        const start = this._pick(culture.starts);
+        const ending = this._pick(culture.endings);
+        
+        // Combine intelligently
+        let name = start;
+        
+        // Avoid double consonants at junction
+        const startEnd = start.slice(-1).toLowerCase();
+        const endStart = ending[0].toLowerCase();
+        
+        if (startEnd === endStart && !/[aeiou]/i.test(startEnd)) {
+            name = start.slice(0, -1);
+        }
+        
+        // Avoid awkward vowel combinations
+        const startEndsVowel = /[aeiou]$/i.test(name);
+        const endStartsVowel = /^[aeiou]/i.test(ending);
+        
+        if (startEndsVowel && endStartsVowel) {
+            // Skip first vowel of ending
+            name += ending.slice(1);
+        } else {
+            name += ending;
+        }
+        
+        // Clean up the name
+        name = this._cleanName(name);
+        
+        // Ensure first letter is uppercase
+        return name.charAt(0).toUpperCase() + name.slice(1).toLowerCase();
+    }
+    
+    /**
+     * Clean up awkward letter combinations
+     */
+    _cleanName(name) {
+        return name
+            // Remove triple letters
+            .replace(/(.)\1\1+/g, '$1$1')
+            // Fix double vowels that sound awkward
+            .replace(/([aeiou])\1/gi, '$1')
+            // Ensure it's not too short
+            .replace(/^(.{1,3})$/, '$1an');
+    }
+    
+    /**
+     * Check if name is valid
+     */
+    _isValidName(name) {
+        if (name.length < 4 || name.length > 16) return false;
+        if (!/[aeiou]/i.test(name)) return false;
+        return true;
+    }
+    
+    /**
+     * Generate multiple unique names
      */
     generateNames(count, type = 'kingdom') {
         const names = [];
@@ -44,7 +217,7 @@ export class NameGenerator {
             do {
                 name = this._generateName(type);
                 attempts++;
-            } while (this.usedNames.has(name.toLowerCase()) && attempts < 100);
+            } while ((this.usedNames.has(name.toLowerCase()) || !this._isValidName(name.replace(/^.+of /, ''))) && attempts < 100);
             
             this.usedNames.add(name.toLowerCase());
             names.push(name);
@@ -58,328 +231,128 @@ export class NameGenerator {
      */
     _generateName(type) {
         switch (type) {
-            case 'kingdom':
-                return this._generateKingdomName();
-            case 'county':
-                return this._generateCountyName();
-            case 'city':
-                return this._generateCityName();
-            case 'region':
-                return this._generateRegionName();
-            case 'river':
-                return this._generateRiverName();
-            case 'mountain':
-                return this._generateMountainName();
-            case 'forest':
-                return this._generateForestName();
-            case 'sea':
-                return this._generateSeaName();
-            default:
-                return this._generateKingdomName();
+            case 'kingdom': return this._generateKingdomName();
+            case 'county': return this._generateBaseName();
+            case 'city': return this._generateCityName();
+            case 'region': return this._generateRegionName();
+            case 'river': return this._generateRiverName();
+            case 'mountain': return this._generateMountainName();
+            case 'forest': return this._generateForestName();
+            case 'sea': return this._generateSeaName();
+            default: return this._generateKingdomName();
         }
     }
     
-    // ========================================
-    // PHONEME DEFINITIONS
-    // ========================================
-    
-    get vowels() {
-        return ['a', 'e', 'i', 'o', 'u'];
-    }
-    
-    get softVowels() {
-        return ['a', 'e', 'i', 'o', 'u', 'ae', 'ai', 'au', 'ea', 'ei', 'ia', 'io', 'ou', 'oe', 'y'];
-    }
-    
-    get hardConsonants() {
-        return ['b', 'c', 'd', 'g', 'k', 'p', 't', 'v', 'z'];
-    }
-    
-    get softConsonants() {
-        return ['f', 'h', 'l', 'm', 'n', 'r', 's', 'w', 'y'];
-    }
-    
-    get allConsonants() {
-        return [...this.hardConsonants, ...this.softConsonants];
-    }
-    
-    get blends() {
-        return ['bl', 'br', 'ch', 'cl', 'cr', 'dr', 'fl', 'fr', 'gl', 'gr', 'ph', 'pl', 'pr', 
-                'sh', 'sk', 'sl', 'sm', 'sn', 'sp', 'st', 'str', 'sw', 'th', 'tr', 'tw', 'wh', 'wr'];
-    }
-    
-    get endConsonants() {
-        return ['d', 'k', 'l', 'm', 'n', 'r', 's', 't', 'th', 'x'];
-    }
-    
-    // ========================================
-    // KINGDOM NAMES (Long, Grand with Government Types)
-    // ========================================
-    
+    /**
+     * Generate kingdom name with government type
+     */
     _generateKingdomName() {
-        // Generate base name
-        const patterns = [
-            'CVC', 'CVCV', 'CVCC', 'CVCVC', 'CVCCV',
-            'CCVC', 'CCVCV', 'CCVCCV', 'VCVC', 'VCCVC',
-            'CVCVN', 'CCVCVN', 'VCVCN'
-        ];
-        
-        const pattern = this._pick(patterns);
-        let baseName = '';
-        
-        for (let i = 0; i < pattern.length; i++) {
-            const char = pattern[i];
-            
-            if (char === 'C') {
-                if (i === 0 && this._random() < 0.3) {
-                    baseName += this._pick(this.blends);
-                } else {
-                    baseName += this._pick(this.allConsonants);
-                }
-            } else if (char === 'V') {
-                if (this._random() < 0.2) {
-                    baseName += this._pick(this.softVowels);
-                } else {
-                    baseName += this._pick(this.vowels);
-                }
-            } else if (char === 'N') {
-                const endings = ['ia', 'or', 'an', 'en', 'on', 'ar', 'ir', 'ur', 'is', 'os', 'us', 
-                               'ax', 'ex', 'ix', 'um', 'heim', 'gard', 'land', 'mark', 'vale', 
-                               'don', 'ria', 'nia', 'sia', 'tia', 'oth', 'eth', 'ith', 'ath',
-                               'ora', 'ara', 'ura', 'wyn', 'wen', 'mir', 'dur', 'thor'];
-                baseName += this._pick(endings);
-            }
-        }
-        
-        baseName = this._cleanName(baseName);
-        baseName = baseName.charAt(0).toUpperCase() + baseName.slice(1);
-        
-        // Government types with their formats
-        const governmentTypes = [
-            { prefix: 'Kingdom of ', suffix: '', weight: 20 },
-            { prefix: 'Empire of ', suffix: '', weight: 8 },
-            { prefix: 'Republic of ', suffix: '', weight: 10 },
-            { prefix: 'Duchy of ', suffix: '', weight: 12 },
-            { prefix: 'Grand Duchy of ', suffix: '', weight: 6 },
-            { prefix: 'Principality of ', suffix: '', weight: 8 },
-            { prefix: 'Confederation of ', suffix: '', weight: 4 },
-            { prefix: 'Realm of ', suffix: '', weight: 10 },
-            { prefix: 'Dominion of ', suffix: '', weight: 6 },
-            { prefix: 'Commonwealth of ', suffix: '', weight: 4 },
-            { prefix: 'Oligarchy of ', suffix: '', weight: 3 },
-            { prefix: 'Theocracy of ', suffix: '', weight: 3 },
-            { prefix: 'Free City of ', suffix: '', weight: 5 },
-            { prefix: 'United Provinces of ', suffix: '', weight: 3 },
-            { prefix: 'Archduchy of ', suffix: '', weight: 4 },
-            { prefix: 'Margraviate of ', suffix: '', weight: 3 },
-            { prefix: 'Electorate of ', suffix: '', weight: 3 },
-            { prefix: 'Sultanate of ', suffix: '', weight: 4 },
-            { prefix: 'Caliphate of ', suffix: '', weight: 2 },
-            { prefix: 'Khanate of ', suffix: '', weight: 3 },
-            { prefix: 'Tsardom of ', suffix: '', weight: 3 },
-            { prefix: 'Holy Empire of ', suffix: '', weight: 2 },
-            { prefix: '', suffix: ' Empire', weight: 5 },
-            { prefix: '', suffix: ' Republic', weight: 4 },
-            { prefix: '', suffix: '', weight: 15 }, // Just the name
-            { prefix: 'The ', suffix: ' Isles', weight: 3 },
-            { prefix: 'The ', suffix: ' Reaches', weight: 2 },
-            { prefix: 'The ', suffix: ' Marches', weight: 2 },
-            { prefix: 'Lands of ', suffix: '', weight: 4 },
-            { prefix: 'The Crown of ', suffix: '', weight: 3 },
-        ];
-        
-        // Weighted random selection
-        const totalWeight = governmentTypes.reduce((sum, g) => sum + g.weight, 0);
-        let randomVal = this._random() * totalWeight;
-        
-        let selectedType = governmentTypes[0];
-        for (const govType of governmentTypes) {
-            randomVal -= govType.weight;
-            if (randomVal <= 0) {
-                selectedType = govType;
-                break;
-            }
-        }
-        
-        return selectedType.prefix + baseName + selectedType.suffix;
+        const baseName = this._generateBaseName();
+        const gov = this._pickGovernment();
+        return gov.prefix + baseName;
     }
     
-    // ========================================
-    // COUNTY NAMES (Medium, Simple)
-    // ========================================
-    
-    _generateCountyName() {
-        const patterns = ['CVC', 'CVCV', 'VCV', 'CVVC', 'CCVC', 'VCVC'];
-        const pattern = this._pick(patterns);
-        
-        let name = '';
-        for (const char of pattern) {
-            if (char === 'C') {
-                name += this._pick(this.allConsonants);
-            } else {
-                name += this._pick(this.vowels);
-            }
-        }
-        
-        name = this._cleanName(name);
-        return name.charAt(0).toUpperCase() + name.slice(1);
-    }
-    
-    // ========================================
-    // CITY NAMES (Varied)
-    // ========================================
-    
+    /**
+     * Generate city name
+     */
     _generateCityName() {
         const style = this._random();
         
-        if (style < 0.4) {
-            // Simple name
-            return this._generateCountyName();
-        } else if (style < 0.7) {
-            // Name + suffix
-            const base = this._generateCountyName();
-            const suffixes = ['ton', 'burg', 'ville', 'ford', 'port', 'haven', 'stead', 'gate', 'bridge', 'well'];
-            return base + this._pick(suffixes);
+        if (style < 0.7) {
+            return this._generateBaseName();
         } else {
-            // Compound name
-            const prefixes = ['North', 'South', 'East', 'West', 'New', 'Old', 'High', 'Low', 'Great', 'Little'];
-            const base = this._generateCountyName();
-            return this._pick(prefixes) + ' ' + base;
+            const prefixes = ['Port ', 'Fort ', 'New ', 'Old ', 'High ', 'Low '];
+            return this._pick(prefixes) + this._generateBaseName();
         }
     }
     
-    // ========================================
-    // REGION NAMES
-    // ========================================
-    
+    /**
+     * Generate region name
+     */
     _generateRegionName() {
         const style = this._random();
         
-        if (style < 0.5) {
-            // "The X Lands/Plains/Hills"
-            const adjectives = ['Northern', 'Southern', 'Eastern', 'Western', 'Central', 'High', 'Low', 
-                               'Golden', 'Silver', 'Green', 'Dark', 'Bright', 'Ancient', 'Wild', 'Frozen'];
-            const terrains = ['Lands', 'Plains', 'Hills', 'Highlands', 'Lowlands', 'Steppes', 'Wastes',
-                             'Reaches', 'Marches', 'Fields', 'Wilds', 'Expanse'];
+        if (style < 0.4) {
+            const adjectives = ['Northern', 'Southern', 'Eastern', 'Western', 'Central', 'High',
+                               'Low', 'Golden', 'Silver', 'Emerald', 'Verdant', 'Iron', 'Crimson'];
+            const terrains = ['Lands', 'Plains', 'Hills', 'Highlands', 'Lowlands', 'Reaches',
+                             'Marches', 'Steppes', 'Valleys', 'Wilds', 'Shores'];
             return 'The ' + this._pick(adjectives) + ' ' + this._pick(terrains);
         } else {
-            // Base name + suffix
-            const base = this._generateCountyName();
-            const suffixes = ['lands', 'reach', 'march', 'dale', 'vale', 'shire', 'wood', 'moor', 'fen'];
-            return base + this._pick(suffixes);
+            return this._generateBaseName();
         }
     }
     
-    // ========================================
-    // RIVER NAMES
-    // ========================================
-    
+    /**
+     * Generate river name
+     */
     _generateRiverName() {
         const style = this._random();
         
-        if (style < 0.4) {
-            // Simple name + River
-            const base = this._generateCountyName();
-            return base + ' River';
-        } else if (style < 0.7) {
-            // Adjective River
-            const adjectives = ['Crystal', 'Silver', 'Golden', 'Winding', 'Rushing', 'Silent', 'Black', 
-                               'White', 'Blue', 'Green', 'Red', 'Swift', 'Lazy', 'Ancient', 'Sacred'];
+        if (style < 0.5) {
+            return this._generateBaseName() + ' River';
+        } else if (style < 0.75) {
+            const adjectives = ['Crystal', 'Silver', 'Golden', 'Winding', 'Swift', 'White',
+                               'Black', 'Blue', 'Green', 'Red', 'Long', 'Great'];
             return 'The ' + this._pick(adjectives) + ' River';
         } else {
-            // Name only
-            return this._generateCountyName();
+            return 'River ' + this._generateBaseName();
         }
     }
     
-    // ========================================
-    // MOUNTAIN NAMES
-    // ========================================
-    
+    /**
+     * Generate mountain name
+     */
     _generateMountainName() {
         const style = this._random();
         
-        if (style < 0.3) {
-            // Mount X
-            const base = this._generateCountyName();
-            return 'Mount ' + base;
+        if (style < 0.35) {
+            return 'Mount ' + this._generateBaseName();
         } else if (style < 0.6) {
-            // X Peak/Summit
-            const base = this._generateCountyName();
-            const suffixes = ['Peak', 'Summit', 'Spire', 'Horn', 'Tooth', 'Crown'];
-            return base + ' ' + this._pick(suffixes);
+            const summits = ['Peak', 'Summit', 'Spire', 'Horn', 'Crown', 'Crest'];
+            return this._generateBaseName() + ' ' + this._pick(summits);
         } else {
-            // The X Mountains
-            const adjectives = ['Iron', 'Stone', 'Grey', 'White', 'Black', 'Red', 'Frozen', 'Misty',
-                               'Thunder', 'Storm', 'Dragon', 'Giant', 'Ancient', 'Lonely'];
+            const adjectives = ['Iron', 'Stone', 'Grey', 'White', 'Black', 'Red', 'Frost',
+                               'Storm', 'Thunder', 'Dragon', 'Misty', 'Shadow', 'Lonely'];
             return 'The ' + this._pick(adjectives) + ' Mountains';
         }
     }
     
-    // ========================================
-    // FOREST NAMES
-    // ========================================
-    
+    /**
+     * Generate forest name
+     */
     _generateForestName() {
         const style = this._random();
         
-        if (style < 0.4) {
-            // X Forest/Wood
-            const base = this._generateCountyName();
-            const suffixes = ['Forest', 'Wood', 'Woods', 'Grove'];
-            return base + ' ' + this._pick(suffixes);
-        } else if (style < 0.7) {
-            // The X Forest
-            const adjectives = ['Dark', 'Deep', 'Ancient', 'Enchanted', 'Whispering', 'Silent', 'Shadowed',
-                               'Golden', 'Silver', 'Emerald', 'Tangled', 'Wild', 'Sacred', 'Forbidden'];
-            return 'The ' + this._pick(adjectives) + ' Forest';
+        if (style < 0.5) {
+            const types = ['Forest', 'Wood', 'Woods', 'Grove', 'Weald'];
+            return this._generateBaseName() + ' ' + this._pick(types);
         } else {
-            // Xwood
-            const base = this._generateCountyName();
-            return base + 'wood';
+            const adjectives = ['Dark', 'Deep', 'Ancient', 'Enchanted', 'Whispering', 'Silent',
+                               'Shadow', 'Golden', 'Emerald', 'Wild', 'Sacred', 'Forbidden'];
+            return 'The ' + this._pick(adjectives) + ' Forest';
         }
     }
     
-    // ========================================
-    // SEA/OCEAN NAMES
-    // ========================================
-    
+    /**
+     * Generate sea name
+     */
     _generateSeaName() {
         const style = this._random();
         
         if (style < 0.4) {
-            // X Sea
-            const base = this._generateCountyName();
-            return base + ' Sea';
+            return this._generateBaseName() + ' Sea';
         } else if (style < 0.7) {
-            // The X Sea/Ocean
-            const adjectives = ['Azure', 'Emerald', 'Golden', 'Silver', 'Endless', 'Stormy', 'Calm',
-                               'Northern', 'Southern', 'Eastern', 'Western', 'Inner', 'Outer', 'Frozen'];
-            const types = ['Sea', 'Ocean', 'Waters', 'Deeps'];
+            const adjectives = ['Azure', 'Emerald', 'Golden', 'Silver', 'Endless', 'Stormy',
+                               'Northern', 'Southern', 'Inner', 'Outer', 'Frozen', 'Sunlit'];
+            const types = ['Sea', 'Ocean', 'Waters'];
             return 'The ' + this._pick(adjectives) + ' ' + this._pick(types);
         } else {
-            // Bay/Gulf of X
-            const base = this._generateCountyName();
-            const types = ['Bay', 'Gulf', 'Strait', 'Sound'];
-            return this._pick(types) + ' of ' + base;
+            const bodies = ['Bay', 'Gulf', 'Strait', 'Sound', 'Channel'];
+            return this._pick(bodies) + ' of ' + this._generateBaseName();
         }
-    }
-    
-    // ========================================
-    // UTILITY FUNCTIONS
-    // ========================================
-    
-    /**
-     * Clean up awkward letter combinations
-     */
-    _cleanName(name) {
-        return name
-            .replace(/([aeiou])\1{2,}/gi, '$1$1')     // No triple vowels
-            .replace(/([^aeiou])\1{2,}/gi, '$1$1')   // No triple consonants
-            .replace(/^[^a-zA-Z]/, 'K')               // Ensure starts with letter
-            .replace(/(.)\1{2,}/g, '$1$1');           // No triple anything
     }
 }
 
-// Export a default instance for convenience
+// Export a default instance
 export const nameGenerator = new NameGenerator();
