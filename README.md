@@ -41,6 +41,8 @@ A sophisticated procedural fantasy map generator that creates detailed, realisti
 - **Contour lines**: Marching squares algorithm for smooth elevation contours
 - **Smooth coastlines**: Catmull-Rom spline interpolation with coastal shading
 - **Compass rose**: Ornate vintage-style compass with dashed direction lines
+- **Coordinate grid**: Subtle grid overlay with kilometer coordinates
+- **Scale bar**: Dynamic scale indicator showing distances in kilometers
 - **Fantasy styling**: Parchment colors, serif fonts, medieval aesthetic
 - **River labels**: Elegant italic text placed along straight river sections
 
@@ -128,9 +130,16 @@ php -S localhost:8000
 | Contour Lines | Show elevation contours |
 | Contour Smoothing | Smooth contour line rendering |
 | Compass Rose | Show ornate compass with direction lines |
+| Coordinate Grid | Show kilometer grid overlay |
+| Scale Bar | Show dynamic scale indicator |
 | Rivers | Show rivers with names |
 | Roads | Show road network between cities |
 | Dashed Borders | Use dashed lines for kingdom borders |
+
+### Map Scale Panel
+| Parameter | Range | Description |
+|-----------|-------|-------------|
+| World Size | 100-5000 km | Total width of the map in kilometers |
 
 ## Technical Architecture
 

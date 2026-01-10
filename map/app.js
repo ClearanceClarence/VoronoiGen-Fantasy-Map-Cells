@@ -82,6 +82,10 @@ const showWindroseToggle = document.getElementById('show-windrose');
 const showEdgesToggle = document.getElementById('show-edges');
 const showCentersToggle = document.getElementById('show-centers');
 const showDelaunayToggle = document.getElementById('show-delaunay');
+const showGridToggle = document.getElementById('show-grid');
+const showScaleToggle = document.getElementById('show-scale');
+const worldSizeSlider = document.getElementById('world-size-km');
+const worldSizeValue = document.getElementById('world-size-km-val');
 
 // DOM Elements - Viewport
 const zoomInBtn = document.getElementById('zoom-in');
@@ -548,6 +552,25 @@ showRiversToggle.addEventListener('change', (e) => {
     updateRenderStats();
 });
 
+showGridToggle.addEventListener('change', (e) => {
+    generator.showGrid = e.target.checked;
+    generator.render();
+    updateRenderStats();
+});
+
+showScaleToggle.addEventListener('change', (e) => {
+    generator.showScale = e.target.checked;
+    generator.render();
+    updateRenderStats();
+});
+
+worldSizeSlider.addEventListener('input', (e) => {
+    worldSizeValue.textContent = e.target.value;
+    generator.worldSizeKm = parseInt(e.target.value);
+    generator.render();
+    updateRenderStats();
+});
+
 function updateRenderStats() {
     statRenderTime.textContent = generator.metrics.renderTime.toFixed(1) + 'ms';
     if (statVisible) {
@@ -900,6 +923,9 @@ generator.showEdges = showEdgesToggle.checked;
 generator.showCenters = showCentersToggle.checked;
 generator.showDelaunay = showDelaunayToggle.checked;
 generator.showRivers = showRiversToggle.checked;
+generator.showGrid = showGridToggle.checked;
+generator.showScale = showScaleToggle.checked;
+generator.worldSizeKm = parseInt(worldSizeSlider.value);
 generator.renderMode = renderMode.value;
 generator.subdivisionLevel = 0;
 

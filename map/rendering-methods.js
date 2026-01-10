@@ -123,15 +123,32 @@ render() {
         this._renderHoveredCell(ctx);
     }
     
+    // Render coordinate grid
+    if (this.showGrid) {
+        this._renderCoordinateGrid(ctx, bounds);
+    }
+    
     // Render wind rose overlay
     if (this.showWindrose) {
         this._renderWindrose(ctx);
+    }
+    
+    // Render scale bar
+    if (this.showScale) {
+        this._renderScaleBar(ctx);
     }
     
     ctx.restore();
     
     // Draw zoom indicator
     this._drawZoomIndicator(ctx);
+    
+    // Save viewport state for CSS transform calculations
+    this._lastRenderedViewport = {
+        x: this.viewport.x,
+        y: this.viewport.y,
+        zoom: this.viewport.zoom
+    };
     
     this.metrics.renderTime = performance.now() - start;
 },
@@ -4362,6 +4379,194 @@ _drawCompassPoint(ctx, cx, cy, angle, length, width) {
  */
 _drawStarPoint(ctx, cx, cy, angle, length, width, color, filled) {
     // No longer used but kept to avoid errors
+},
+
+/**
+ * Render coordinate grid overlay
+ */
+_renderCoordinateGrid(ctx, bounds) {
+    // Calculate km per pixel
+    const kmPerPixel = this.worldSizeKm / this.width;
+    
+    // Determine grid spacing based on zoom and world size
+    const viewWidthKm = (bounds.maxX - bounds.minX) * kmPerPixel;
+    
+    // Choose appropriate grid spacing in km
+    const spacingOptions = [5, 10, 25, 50, 100, 200, 250, 500, 1000, 2000];
+    let gridSpacingKm = spacingOptions[spacingOptions.length - 1];
+    for (const spacing of spacingOptions) {
+        const linesInView = viewWidthKm / spacing;
+        if (linesInView >= 3 && linesInView <= 10) {
+            gridSpacingKm = spacing;
+            break;
+        }
+    }
+    
+    // Convert to pixels
+    const gridSpacingPx = gridSpacingKm / kmPerPixel;
+    
+    // Skip if spacing is too small
+    if (gridSpacingPx < 20) return;
+    
+    // Calculate grid start points (align to grid, starting from 0)
+    const startX = Math.max(0, Math.floor(bounds.minX / gridSpacingPx) * gridSpacingPx);
+    const startY = Math.max(0, Math.floor(bounds.minY / gridSpacingPx) * gridSpacingPx);
+    const endX = Math.min(this.width, bounds.maxX);
+    const endY = Math.min(this.height, bounds.maxY);
+    
+    // Grid line style - more visible, dashed
+    ctx.save();
+    ctx.strokeStyle = 'rgba(60, 50, 40, 0.4)';
+    ctx.lineWidth = 1;
+    ctx.setLineDash([10, 6]);
+    
+    // Draw vertical lines
+    for (let x = startX; x <= endX; x += gridSpacingPx) {
+        if (x < 0) continue;
+        ctx.beginPath();
+        ctx.moveTo(x, Math.max(0, bounds.minY));
+        ctx.lineTo(x, Math.min(this.height, bounds.maxY));
+        ctx.stroke();
+    }
+    
+    // Draw horizontal lines
+    for (let y = startY; y <= endY; y += gridSpacingPx) {
+        if (y < 0) continue;
+        ctx.beginPath();
+        ctx.moveTo(Math.max(0, bounds.minX), y);
+        ctx.lineTo(Math.min(this.width, bounds.maxX), y);
+        ctx.stroke();
+    }
+    
+    ctx.setLineDash([]);
+    ctx.restore();
+    
+    // Draw coordinate labels in screen space
+    ctx.save();
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    
+    const zoom = this.viewport.zoom;
+    const panX = this.viewport.x;
+    const panY = this.viewport.y;
+    
+    ctx.font = 'bold 12px "Times New Roman", Georgia, serif';
+    ctx.fillStyle = 'rgba(60, 45, 30, 0.85)';
+    
+    // X-axis labels along top edge
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'top';
+    for (let x = startX; x <= endX; x += gridSpacingPx) {
+        if (x <= 0) continue;
+        const screenX = x * zoom + panX;
+        if (screenX < 50 || screenX > this.canvas.width - 50) continue;
+        const kmX = Math.round(x * kmPerPixel);
+        ctx.fillText(`${kmX}`, screenX, 10);
+    }
+    
+    // Y-axis labels along left edge
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
+    for (let y = startY; y <= endY; y += gridSpacingPx) {
+        if (y <= 0) continue;
+        const screenY = y * zoom + panY;
+        if (screenY < 50 || screenY > this.canvas.height - 50) continue;
+        const kmY = Math.round(y * kmPerPixel);
+        ctx.fillText(`${kmY}`, 10, screenY);
+    }
+    
+    ctx.restore();
+},
+
+/**
+ * Render scale bar - centered at bottom, bigger design
+ */
+_renderScaleBar(ctx) {
+    ctx.save();
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    
+    // Calculate km per pixel based on current zoom
+    const kmPerPixel = this.worldSizeKm / this.width;
+    const effectiveKmPerPixel = kmPerPixel / this.viewport.zoom;
+    
+    // Target scale bar width in screen pixels (wider: 300-400px)
+    const targetWidthPx = 350;
+    const targetWidthKm = targetWidthPx * effectiveKmPerPixel;
+    
+    // Round to nice number
+    const niceNumbers = [1, 2, 5, 10, 20, 25, 50, 100, 200, 250, 500, 1000, 2000, 5000];
+    let scaleKm = niceNumbers[0];
+    for (const n of niceNumbers) {
+        if (n <= targetWidthKm * 1.3 && n >= targetWidthKm * 0.6) {
+            scaleKm = n;
+            break;
+        }
+        if (n > targetWidthKm) {
+            scaleKm = n;
+            break;
+        }
+    }
+    
+    // Calculate actual bar width in pixels
+    const barWidthPx = scaleKm / effectiveKmPerPixel;
+    
+    // Position centered at bottom
+    const barHeight = 8;
+    const margin = 30;
+    const x = (this.canvas.width - barWidthPx) / 2;
+    const y = this.canvas.height - margin - barHeight;
+    
+    // Draw scale bar - simple line with end ticks
+    ctx.strokeStyle = 'rgba(50, 40, 30, 0.8)';
+    ctx.fillStyle = 'rgba(50, 40, 30, 0.8)';
+    ctx.lineWidth = 2;
+    
+    // Main horizontal line
+    ctx.beginPath();
+    ctx.moveTo(x, y + barHeight / 2);
+    ctx.lineTo(x + barWidthPx, y + barHeight / 2);
+    ctx.stroke();
+    
+    // End ticks (vertical lines)
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(x, y);
+    ctx.lineTo(x, y + barHeight);
+    ctx.moveTo(x + barWidthPx, y);
+    ctx.lineTo(x + barWidthPx, y + barHeight);
+    ctx.stroke();
+    
+    // Middle tick
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.moveTo(x + barWidthPx / 2, y + 1);
+    ctx.lineTo(x + barWidthPx / 2, y + barHeight - 1);
+    ctx.stroke();
+    
+    // Quarter ticks
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(x + barWidthPx / 4, y + 2);
+    ctx.lineTo(x + barWidthPx / 4, y + barHeight - 2);
+    ctx.moveTo(x + barWidthPx * 3 / 4, y + 2);
+    ctx.lineTo(x + barWidthPx * 3 / 4, y + barHeight - 2);
+    ctx.stroke();
+    
+    // Labels - bigger
+    ctx.font = 'bold 14px "Times New Roman", Georgia, serif';
+    ctx.textBaseline = 'bottom';
+    
+    // "0" on left
+    ctx.textAlign = 'center';
+    ctx.fillText('0', x, y - 4);
+    
+    // Distance on right
+    ctx.fillText(`${scaleKm} km`, x + barWidthPx, y - 4);
+    
+    // Middle value
+    ctx.font = '11px "Times New Roman", Georgia, serif';
+    ctx.fillText(`${scaleKm / 2}`, x + barWidthPx / 2, y - 4);
+    
+    ctx.restore();
 },
 
 /**

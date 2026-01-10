@@ -75,6 +75,9 @@ export class VoronoiGenerator {
         this.showDelaunay = false;
         this.showWindrose = false;  // Show compass/wind rose on map
         this.showRivers = true;  // Show rivers on terrain
+        this.showGrid = true;    // Show coordinate grid
+        this.showScale = true;   // Show scale bar
+        this.worldSizeKm = 1000; // World size in kilometers (map width)
         this.renderMode = 'political'; // 'heightmap', 'terrain', 'precipitation', 'political'
         this.seaLevel = 0.4;
         this.subdivisionLevel = 2;  // 0 = no subdivision, 1-4 = subdivision levels
@@ -112,6 +115,11 @@ export class VoronoiGenerator {
         // Debounce timers
         this._renderDebounceTimer = null;
         this._zoomDebounceTimer = null;
+        this._fullRenderTimer = null;
+        
+        // Interaction state for fast CSS transform
+        this._isInteracting = false;
+        this._lastRenderedViewport = { x: 0, y: 0, zoom: 1 };
         
         // Animation frame tracking
         this._animationFrameId = null;
@@ -177,6 +185,9 @@ export class VoronoiGenerator {
                         this.viewport.zoom * zoomFactor));
         
         if (newZoom !== this.viewport.zoom) {
+            // Mark as interacting for fast CSS transform
+            this._isInteracting = true;
+            
             // Zoom toward mouse position
             const worldX = (mouseX - this.viewport.x) / this.viewport.zoom;
             const worldY = (mouseY - this.viewport.y) / this.viewport.zoom;
@@ -198,6 +209,7 @@ export class VoronoiGenerator {
         if (e.button !== 0) return; // Left click only
         
         this.isDragging = true;
+        this._isInteracting = true;
         this.dragStart.x = e.clientX;
         this.dragStart.y = e.clientY;
         this.lastPan.x = this.viewport.x;
@@ -211,9 +223,8 @@ export class VoronoiGenerator {
     _onMouseMove(e) {
         if (!this.isDragging) return;
         
-        const panSpeed = 2.0; // Pan speed multiplier
-        const dx = (e.clientX - this.dragStart.x) * panSpeed;
-        const dy = (e.clientY - this.dragStart.y) * panSpeed;
+        const dx = e.clientX - this.dragStart.x;
+        const dy = e.clientY - this.dragStart.y;
         
         this.viewport.x = this.lastPan.x + dx;
         this.viewport.y = this.lastPan.y + dy;
@@ -228,6 +239,11 @@ export class VoronoiGenerator {
         if (this.isDragging) {
             this.isDragging = false;
             this.canvas.style.cursor = 'grab';
+            
+            // Force full render on mouse up
+            this._isInteracting = false;
+            this._resetTransformCSS();
+            this.render();
         }
     }
     
@@ -239,6 +255,7 @@ export class VoronoiGenerator {
             e.preventDefault();
             const touch = e.touches[0];
             this.isDragging = true;
+            this._isInteracting = true;
             this.dragStart.x = touch.clientX;
             this.dragStart.y = touch.clientY;
             this.lastPan.x = this.viewport.x;
@@ -253,9 +270,8 @@ export class VoronoiGenerator {
         if (e.touches.length === 1 && this.isDragging) {
             e.preventDefault();
             const touch = e.touches[0];
-            const panSpeed = 2.0; // Pan speed multiplier
-            const dx = (touch.clientX - this.dragStart.x) * panSpeed;
-            const dy = (touch.clientY - this.dragStart.y) * panSpeed;
+            const dx = touch.clientX - this.dragStart.x;
+            const dy = touch.clientY - this.dragStart.y;
             
             this.viewport.x = this.lastPan.x + dx;
             this.viewport.y = this.lastPan.y + dy;
@@ -268,19 +284,75 @@ export class VoronoiGenerator {
      * Touch end
      */
     _onTouchEnd(e) {
-        this.isDragging = false;
+        if (this.isDragging) {
+            this.isDragging = false;
+            this._isInteracting = false;
+            this._resetTransformCSS();
+            this.render();
+        }
     }
     
     /**
      * Debounced render for smooth interaction
+     * Uses CSS transform for immediate feedback, then full render after delay
      */
     _debouncedRender(delay = 16) {
+        // Cancel any pending render
         if (this._renderDebounceTimer) {
             cancelAnimationFrame(this._renderDebounceTimer);
         }
-        this._renderDebounceTimer = requestAnimationFrame(() => {
-            this.render();
-        });
+        if (this._fullRenderTimer) {
+            clearTimeout(this._fullRenderTimer);
+        }
+        
+        // During active interaction, use CSS transform for instant feedback
+        if (this._isInteracting) {
+            this._applyTransformCSS();
+            
+            // Schedule full render after interaction stops
+            this._fullRenderTimer = setTimeout(() => {
+                this._isInteracting = false;
+                this._resetTransformCSS();
+                this.render();
+            }, 150);
+        } else {
+            // Normal render via requestAnimationFrame
+            this._renderDebounceTimer = requestAnimationFrame(() => {
+                this.render();
+            });
+        }
+    }
+    
+    /**
+     * Apply CSS transform for fast visual feedback during pan/zoom
+     */
+    _applyTransformCSS() {
+        if (!this._lastRenderedViewport) {
+            this._lastRenderedViewport = { x: 0, y: 0, zoom: 1 };
+        }
+        
+        const last = this._lastRenderedViewport;
+        const curr = this.viewport;
+        
+        // Calculate the transform relative to last rendered state
+        const scale = curr.zoom / last.zoom;
+        const dx = curr.x - last.x * scale;
+        const dy = curr.y - last.y * scale;
+        
+        this.canvas.style.transformOrigin = '0 0';
+        this.canvas.style.transform = `translate(${dx}px, ${dy}px) scale(${scale})`;
+    }
+    
+    /**
+     * Reset CSS transform and store current viewport as last rendered
+     */
+    _resetTransformCSS() {
+        this.canvas.style.transform = '';
+        this._lastRenderedViewport = {
+            x: this.viewport.x,
+            y: this.viewport.y,
+            zoom: this.viewport.zoom
+        };
     }
     
     /**
@@ -1206,6 +1278,8 @@ export class VoronoiGenerator {
             return;
         }
         
+        const startTime = performance.now();
+        
         // Clear rendering caches when kingdoms change
         this._contourCache = null;
         this._coastlineCache = null;
@@ -1213,12 +1287,14 @@ export class VoronoiGenerator {
         // Store road density for use in city/road generation
         this.roadDensity = roadDensity;
         
-        console.log(`Generating ${numKingdoms} kingdoms with natural borders...`);
+        console.log(`Generating ${numKingdoms} kingdoms...`);
         
-        // Get all land cells
+        // Get all land cells using typed array for speed
+        const isLand = new Uint8Array(this.cellCount);
         const landCells = [];
         for (let i = 0; i < this.cellCount; i++) {
             if (this.heights[i] >= ELEVATION.SEA_LEVEL) {
+                isLand[i] = 1;
                 landCells.push(i);
             }
         }
@@ -1235,28 +1311,30 @@ export class VoronoiGenerator {
         this.kingdomCentroids = [];
         this.kingdomCells = [];
         
-        // First, identify all connected landmasses
+        // Fast landmass detection using typed arrays
         const landmassId = new Int16Array(this.cellCount).fill(-1);
         const landmasses = [];
         let currentLandmass = 0;
         
-        const landSet = new Set(landCells);
+        // BFS for landmass detection - use index-based queue for speed
+        const bfsQueue = new Int32Array(landCells.length);
         
         for (const startCell of landCells) {
             if (landmassId[startCell] >= 0) continue;
             
-            const queue = [startCell];
-            const cells = [];
+            let qHead = 0, qTail = 0;
+            bfsQueue[qTail++] = startCell;
             landmassId[startCell] = currentLandmass;
+            const cells = [];
             
-            while (queue.length > 0) {
-                const current = queue.shift();
+            while (qHead < qTail) {
+                const current = bfsQueue[qHead++];
                 cells.push(current);
                 
                 for (const neighbor of this.voronoi.neighbors(current)) {
-                    if (landSet.has(neighbor) && landmassId[neighbor] < 0) {
+                    if (isLand[neighbor] && landmassId[neighbor] < 0) {
                         landmassId[neighbor] = currentLandmass;
-                        queue.push(neighbor);
+                        bfsQueue[qTail++] = neighbor;
                     }
                 }
             }
@@ -1265,80 +1343,61 @@ export class VoronoiGenerator {
             currentLandmass++;
         }
         
-        console.log(`Found ${landmasses.length} landmasses`);
-        
         // Sort landmasses by size (largest first)
         landmasses.sort((a, b) => b.size - a.size);
         
-        // Calculate edge costs - rivers and mountains make good borders
-        const edgeCost = this._calculateBorderCosts();
-        
-        // Calculate total land and how to distribute kingdoms
+        // Calculate total land and minimum kingdom size
         const totalLand = landCells.length;
         const minCellsForKingdom = Math.max(10, totalLand * 0.01);
         
         const significantLandmasses = landmasses.filter(lm => lm.size >= minCellsForKingdom);
         const tinyLandmasses = landmasses.filter(lm => lm.size < minCellsForKingdom);
         
-        // Distribute kingdoms across significant landmasses
         let kingdomIdx = 0;
         
+        // Process each significant landmass
         for (const landmass of significantLandmasses) {
             const proportion = landmass.size / totalLand;
             let kingdomsForThis = Math.max(1, Math.round(proportion * numKingdoms));
             kingdomsForThis = Math.min(kingdomsForThis, Math.floor(landmass.size / 100));
             kingdomsForThis = Math.max(1, kingdomsForThis);
             
-            // Select capitals using better algorithm - prefer lowlands, avoid edges
-            const capitals = this._selectGoodCapitals(landmass.cells, kingdomsForThis);
+            // Select capitals using k-means style spacing
+            const capitals = this._selectCapitalsFast(landmass.cells, kingdomsForThis);
             
-            // Initialize priority queues for weighted flood fill
-            const queues = [];
+            // Fast flood fill - simple BFS round-robin without sorting
+            const queues = capitals.map(c => [c]);
             const startKingdomIdx = kingdomIdx;
-            for (const capital of capitals) {
-                this.kingdoms[capital] = kingdomIdx;
-                this.kingdomCapitals.push(capital);
-                queues.push([{ cell: capital, cost: 0 }]);
-                kingdomIdx++;
-            }
             
-            // Weighted flood fill - expand based on cost (lower cost first)
-            const cellCost = new Float32Array(this.cellCount).fill(Infinity);
-            for (let q = 0; q < queues.length; q++) {
-                cellCost[capitals[q]] = 0;
+            for (let i = 0; i < capitals.length; i++) {
+                this.kingdoms[capitals[i]] = kingdomIdx + i;
+                this.kingdomCapitals.push(capitals[i]);
             }
+            kingdomIdx += capitals.length;
             
-            // Use a simpler round-robin approach that's more reliable
+            // Simple round-robin BFS - much faster than weighted
             let totalAssigned = capitals.length;
             const targetSize = landmass.cells.length;
+            let queueHeads = new Int32Array(queues.length);
             
             while (totalAssigned < targetSize) {
                 let anyExpanded = false;
                 
-                // Each kingdom takes turns expanding
                 for (let q = 0; q < queues.length; q++) {
-                    if (queues[q].length === 0) continue;
+                    const queue = queues[q];
+                    const head = queueHeads[q];
+                    if (head >= queue.length) continue;
                     
-                    // Sort by cost and take lowest
-                    queues[q].sort((a, b) => a.cost - b.cost);
-                    const { cell: current, cost: currentCost } = queues[q].shift();
-                    
+                    const current = queue[head];
+                    queueHeads[q]++;
                     const myKingdom = this.kingdoms[current];
-                    if (myKingdom < 0) continue;
                     
                     for (const neighbor of this.voronoi.neighbors(current)) {
                         if (landmassId[neighbor] !== landmass.id) continue;
-                        if (this.kingdoms[neighbor] >= 0) continue; // Already claimed
+                        if (this.kingdoms[neighbor] >= 0) continue;
                         
-                        // Calculate cost to expand to this neighbor
-                        const edgeKey = current < neighbor ? `${current}-${neighbor}` : `${neighbor}-${current}`;
-                        const crossingCost = edgeCost.get(edgeKey) || 1;
-                        const newCost = currentCost + crossingCost;
-                        
-                        // Claim this cell
                         this.kingdoms[neighbor] = myKingdom;
-                        cellCost[neighbor] = newCost;
-                        queues[q].push({ cell: neighbor, cost: newCost });
+                        queue.push(neighbor);
                         totalAssigned++;
                         anyExpanded = true;
                     }
@@ -1348,114 +1407,57 @@ export class VoronoiGenerator {
             }
         }
         
-        // Handle tiny landmasses - assign to nearest kingdom on a DIFFERENT landmass
-        // This ensures islands belong to the closest mainland kingdom
-        for (const landmass of tinyLandmasses) {
-            // Get centroid of this tiny landmass
-            let cx = 0, cy = 0;
-            for (const cell of landmass.cells) {
-                cx += this.points[cell * 2];
-                cy += this.points[cell * 2 + 1];
-            }
-            cx /= landmass.cells.length;
-            cy /= landmass.cells.length;
-            
-            // Find nearest assigned cell that is on a DIFFERENT landmass
-            let nearestKingdom = -1;
-            let nearestDist = Infinity;
-            
-            for (let i = 0; i < this.cellCount; i++) {
-                if (this.kingdoms[i] < 0) continue;
-                // Must be on a different landmass (not same island)
-                if (landmassId[i] === landmass.id) continue;
-                // Must be land
-                if (this.heights[i] < ELEVATION.SEA_LEVEL) continue;
-                
-                const x = this.points[i * 2];
-                const y = this.points[i * 2 + 1];
-                const dist = (x - cx) ** 2 + (y - cy) ** 2;
-                if (dist < nearestDist) {
-                    nearestDist = dist;
-                    nearestKingdom = this.kingdoms[i];
+        // Handle tiny landmasses - sample capitals to find nearest
+        if (tinyLandmasses.length > 0 && this.kingdomCapitals.length > 0) {
+            for (const landmass of tinyLandmasses) {
+                // Get centroid
+                let cx = 0, cy = 0;
+                for (const cell of landmass.cells) {
+                    cx += this.points[cell * 2];
+                    cy += this.points[cell * 2 + 1];
                 }
-            }
-            
-            // If no kingdom found (isolated island with no other land), create its own
-            if (nearestKingdom < 0) {
-                nearestKingdom = kingdomIdx;
-                this.kingdomCapitals.push(landmass.cells[0]);
-                kingdomIdx++;
-            }
-            
-            // Assign all cells in tiny landmass to nearest kingdom
-            for (const cell of landmass.cells) {
-                this.kingdoms[cell] = nearestKingdom;
-            }
-        }
-        
-        // CRITICAL: Ensure ALL land cells are assigned to a kingdom
-        // First pass: assign from land neighbors
-        for (let pass = 0; pass < 20; pass++) {
-            let assignedThisPass = 0;
-            
-            for (let i = 0; i < this.cellCount; i++) {
-                if (this.heights[i] < ELEVATION.SEA_LEVEL) continue;
-                if (this.kingdoms[i] >= 0) continue;
+                cx /= landmass.cells.length;
+                cy /= landmass.cells.length;
                 
-                // Find assigned LAND neighbor
-                let bestKingdom = -1;
-                for (const neighbor of this.voronoi.neighbors(i)) {
-                    if (this.kingdoms[neighbor] >= 0 && this.heights[neighbor] >= ELEVATION.SEA_LEVEL) {
-                        bestKingdom = this.kingdoms[neighbor];
-                        break;
+                // Find nearest capital (fast - only check capitals, not all cells)
+                let nearestKingdom = 0;
+                let nearestDist = Infinity;
+                
+                for (let k = 0; k < this.kingdomCapitals.length; k++) {
+                    const cap = this.kingdomCapitals[k];
+                    if (landmassId[cap] === landmass.id) continue;
+                    
+                    const x = this.points[cap * 2];
+                    const y = this.points[cap * 2 + 1];
+                    const dist = (x - cx) ** 2 + (y - cy) ** 2;
+                    if (dist < nearestDist) {
+                        nearestDist = dist;
+                        nearestKingdom = this.kingdoms[cap];
                     }
                 }
                 
-                if (bestKingdom >= 0) {
-                    this.kingdoms[i] = bestKingdom;
-                    assignedThisPass++;
+                for (const cell of landmass.cells) {
+                    this.kingdoms[cell] = nearestKingdom;
                 }
             }
-            
-            if (assignedThisPass === 0) break;
         }
         
-        // Second pass: assign any remaining cells to nearest kingdom by distance
-        for (let i = 0; i < this.cellCount; i++) {
-            if (this.heights[i] < ELEVATION.SEA_LEVEL) continue;
-            if (this.kingdoms[i] >= 0) continue;
-            
-            const x = this.points[i * 2];
-            const y = this.points[i * 2 + 1];
-            let nearestDist = Infinity;
-            let nearestKingdom = -1;
-            
-            for (let j = 0; j < this.cellCount; j++) {
-                if (this.kingdoms[j] < 0) continue;
-                if (this.heights[j] < ELEVATION.SEA_LEVEL) continue; // Must be land
+        // Fast cleanup pass for any unassigned land cells
+        for (let pass = 0; pass < 5; pass++) {
+            let changed = false;
+            for (let i = 0; i < this.cellCount; i++) {
+                if (!isLand[i] || this.kingdoms[i] >= 0) continue;
                 
-                const jx = this.points[j * 2];
-                const jy = this.points[j * 2 + 1];
-                const dist = (jx - x) ** 2 + (jy - y) ** 2;
-                if (dist < nearestDist) {
-                    nearestDist = dist;
-                    nearestKingdom = this.kingdoms[j];
+                for (const neighbor of this.voronoi.neighbors(i)) {
+                    if (this.kingdoms[neighbor] >= 0) {
+                        this.kingdoms[i] = this.kingdoms[neighbor];
+                        changed = true;
+                        break;
+                    }
                 }
             }
-            
-            if (nearestKingdom >= 0) {
-                this.kingdoms[i] = nearestKingdom;
-            } else {
-                // Truly isolated - create new kingdom
-                this.kingdoms[i] = kingdomIdx;
-                this.kingdomCapitals.push(i);
-                kingdomIdx++;
-            }
+            if (!changed) break;
         }
-        
-        // Smooth kingdom borders and remove exclaves - single pass is usually sufficient
-        this._smoothKingdomBorders(2);
-        this._removeKingdomExclaves();
         
         // Update kingdom count
         this.kingdomCount = kingdomIdx;
@@ -1467,7 +1469,7 @@ export class VoronoiGenerator {
         
         for (let i = 0; i < this.cellCount; i++) {
             const k = this.kingdoms[i];
-            if (k >= 0) {
+            if (k >= 0 && k < this.kingdomCount) {
                 this.kingdomCells[k].push(i);
             }
         }
@@ -1475,7 +1477,7 @@ export class VoronoiGenerator {
         // Calculate centroid for each kingdom
         for (let k = 0; k < this.kingdomCount; k++) {
             const cells = this.kingdomCells[k];
-            if (cells.length === 0) {
+            if (!cells || cells.length === 0) {
                 this.kingdomCentroids[k] = { x: 0, y: 0 };
                 continue;
             }
@@ -1495,6 +1497,8 @@ export class VoronoiGenerator {
         this.nameGenerator.reset();
         this.kingdomNames = this.nameGenerator.generateNames(this.kingdomCount, 'kingdom');
         
+        console.log(`Kingdom generation: ${(performance.now() - startTime).toFixed(1)}ms`);
+        
         // Generate capitols for each kingdom
         this._generateCapitols();
         
@@ -1507,6 +1511,76 @@ export class VoronoiGenerator {
         console.log(`Generated ${this.kingdomCount} kingdoms (requested ${numKingdoms})`);
     }
     
+    /**
+     * Fast capital selection using spatial distribution
+     */
+    _selectCapitalsFast(landCells, count) {
+        if (count <= 0 || landCells.length === 0) return [];
+        if (count === 1) return [landCells[Math.floor(landCells.length / 2)]];
+        
+        const capitals = [];
+        const cellSet = new Set(landCells);
+        
+        // Start with a random cell near center
+        let cx = 0, cy = 0;
+        for (const cell of landCells) {
+            cx += this.points[cell * 2];
+            cy += this.points[cell * 2 + 1];
+        }
+        cx /= landCells.length;
+        cy /= landCells.length;
+        
+        // Find cell nearest to centroid
+        let nearestToCentroid = landCells[0];
+        let nearestDist = Infinity;
+        for (const cell of landCells) {
+            const d = (this.points[cell * 2] - cx) ** 2 + (this.points[cell * 2 + 1] - cy) ** 2;
+            if (d < nearestDist) {
+                nearestDist = d;
+                nearestToCentroid = cell;
+            }
+        }
+        capitals.push(nearestToCentroid);
+        
+        // Add remaining capitals maximizing minimum distance to existing capitals
+        while (capitals.length < count) {
+            let bestCell = -1;
+            let bestMinDist = -1;
+            
+            // Sample cells for speed (don't check all)
+            const sampleSize = Math.min(500, landCells.length);
+            const step = Math.max(1, Math.floor(landCells.length / sampleSize));
+            
+            for (let i = 0; i < landCells.length; i += step) {
+                const cell = landCells[i];
+                if (capitals.includes(cell)) continue;
+                
+                const x = this.points[cell * 2];
+                const y = this.points[cell * 2 + 1];
+                
+                // Find minimum distance to any existing capital
+                let minDist = Infinity;
+                for (const cap of capitals) {
+                    const d = (this.points[cap * 2] - x) ** 2 + (this.points[cap * 2 + 1] - y) ** 2;
+                    if (d < minDist) minDist = d;
+                }
+                
+                if (minDist > bestMinDist) {
+                    bestMinDist = minDist;
+                    bestCell = cell;
+                }
+            }
+            
+            if (bestCell >= 0) {
+                capitals.push(bestCell);
+            } else {
+                break;
+            }
+        }
+        
+        return capitals;
+    }
+
     /**
      * Generate capitol cities for each kingdom
      * Capitols are placed in suitable locations (not on mountains, preferably low-mid elevation)
