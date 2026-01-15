@@ -15,6 +15,10 @@
         <div class="loading-bg">
             <div class="parchment-base"></div>
             <div class="parchment-texture"></div>
+            <div class="parchment-noise"></div>
+            <div class="parchment-fibers"></div>
+            <div class="film-grain"></div>
+            <div class="scanlines"></div>
             <div class="parchment-vignette"></div>
             
             <!-- Simple decorative border -->
@@ -347,7 +351,25 @@
                                 <input type="checkbox" id="show-windrose">
                                 <span>Compass Rose</span>
                             </label>
+                            <label class="ctrl-check">
+                                <input type="checkbox" id="show-grid" checked>
+                                <span>Coordinate Grid</span>
+                            </label>
+                            <label class="ctrl-check">
+                                <input type="checkbox" id="show-scale" checked>
+                                <span>Scale Bar</span>
+                            </label>
                         </div>
+                    </div>
+
+                    <!-- Map Scale -->
+                    <div class="ctrl-section">
+                        <div class="ctrl-section-head"><span>Map Scale</span></div>
+                        <label class="ctrl-row">
+                            <span>World Size (km)</span>
+                            <input type="range" id="world-size-km" min="100" max="5000" value="1000" step="100">
+                            <span class="ctrl-value" id="world-size-km-val">1000</span>
+                        </label>
                     </div>
 
                     <!-- Export -->

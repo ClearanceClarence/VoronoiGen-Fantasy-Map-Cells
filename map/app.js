@@ -4,6 +4,23 @@
  */
 
 import { VoronoiGenerator } from './voronoi-generator.js?v=200';
+import { WorkerBridge } from './worker-bridge.js';
+
+// Worker bridge for background generation
+let workerBridge = null;
+let useWorkerGeneration = true;  // Toggle for worker-based generation
+
+function initWorker() {
+    if (workerBridge) return;
+    workerBridge = new WorkerBridge('./generation.worker.js');
+    workerBridge.onProgress = (data) => {
+        updateLoadingStatus(data.message);
+    };
+    workerBridge.onError = (error) => {
+        console.error('Worker error:', error);
+        useWorkerGeneration = false;  // Fallback to main thread
+    };
+}
 
 // Loading Screen
 const loadingScreen = document.getElementById('loading-screen');
@@ -82,6 +99,10 @@ const showWindroseToggle = document.getElementById('show-windrose');
 const showEdgesToggle = document.getElementById('show-edges');
 const showCentersToggle = document.getElementById('show-centers');
 const showDelaunayToggle = document.getElementById('show-delaunay');
+const showGridToggle = document.getElementById('show-grid');
+const showScaleToggle = document.getElementById('show-scale');
+const worldSizeSlider = document.getElementById('world-size-km');
+const worldSizeValue = document.getElementById('world-size-km-val');
 
 // DOM Elements - Viewport
 const zoomInBtn = document.getElementById('zoom-in');
@@ -123,7 +144,7 @@ function debounce(func, wait) {
 // GENERATION
 // ========================================
 
-function generate() {
+async function generate() {
     const count = parseInt(cellCountInput.value) || 50000;
     const distribution = distributionSelect.value;
     const seed = parseInt(seedInput.value) || Date.now();
@@ -135,34 +156,125 @@ function generate() {
     // Show loading screen
     showLoading('Generating new landmass...');
     
-    // Use setTimeout to allow UI to update
-    setTimeout(() => {
-        updateLoadingStatus('Creating terrain cells...');
+    // Initialize worker if needed
+    initWorker();
+    
+    // Get heightmap options from UI
+    const heightmapOptions = {
+        algorithm: noiseAlgorithm.value,
+        frequency: parseFloat(noiseFrequency.value),
+        octaves: parseInt(noiseOctaves.value),
+        seaLevel: parseFloat(seaLevel.value),
+        falloff: falloffType.value,
+        falloffStrength: parseFloat(falloffStrength.value)
+    };
+    
+    try {
+        if (useWorkerGeneration && workerBridge) {
+            // Use worker for point + heightmap generation
+            updateLoadingStatus('Generating terrain in background...');
+            
+            const result = await workerBridge.generateFull({
+                cellCount: validCount,
+                width: generator.width,
+                height: generator.height,
+                seed: seed,
+                distribution: distribution,
+                relaxIterations: distribution === 'relaxed' ? 3 : 2,
+                heightmapOptions
+            });
+            
+            // Apply results from worker
+            workerBridge.applyResults(generator, result);
+            
+            // Update stats
+            statCells.textContent = generator.cellCount.toLocaleString();
+            statGenTime.textContent = 'Worker';
+            
+        } else {
+            // Fallback: Generate on main thread
+            updateLoadingStatus('Creating terrain cells...');
+            
+            await new Promise(resolve => setTimeout(resolve, 50));
+            
+            const metrics = generator.generate(validCount, distribution, seed, heightmapOptions);
+            
+            statCells.textContent = generator.cellCount.toLocaleString();
+            statGenTime.textContent = metrics.genTime.toFixed(1) + 'ms';
+            
+            // Generate heightmap on main thread
+            updateLoadingStatus('Sculpting terrain...');
+            await new Promise(resolve => setTimeout(resolve, 20));
+            
+            generator.generateHeightmap({
+                seed: seed + 1000,
+                ...heightmapOptions,
+                smoothing: parseInt(smoothing.value),
+                smoothingStrength: parseFloat(smoothingStrength.value)
+            });
+        }
         
-        // Pass heightmap options for land-biased generation
-        const heightmapOptions = {
-            seed: seed,
-            algorithm: noiseAlgorithm.value,
-            frequency: parseFloat(noiseFrequency.value),
-            seaLevel: parseFloat(seaLevel.value),
-            falloff: falloffType.value,
-            falloffStrength: parseFloat(falloffStrength.value)
-        };
+        // Continue with post-processing on main thread
+        await postProcessGeneration(seed);
         
-        const metrics = generator.generate(validCount, distribution, seed, heightmapOptions);
-        
-        // Update stats - cell count may differ due to land biasing
-        statCells.textContent = generator.cellCount.toLocaleString();
-        statLand.textContent = '—';
-        statGenTime.textContent = metrics.genTime.toFixed(1) + 'ms';
-        statRenderTime.textContent = metrics.renderTime.toFixed(1) + 'ms';
-        
-        // Auto-generate heightmap with loading status
-        generateHeightmapWithLoading();
-    }, 50);
+    } catch (error) {
+        console.error('Generation failed:', error);
+        hideLoading();
+    }
 }
 
-function generateHeightmapWithLoading() {
+// Post-processing steps (erosion, precipitation, kingdoms) run on main thread
+async function postProcessGeneration(seed, skipSmoothing = false) {
+    // Apply smoothing if heightmap was generated by worker (worker doesn't do smoothing)
+    if (!skipSmoothing && useWorkerGeneration && parseInt(smoothing.value) > 0) {
+        updateLoadingStatus('Smoothing terrain...');
+        await new Promise(resolve => setTimeout(resolve, 10));
+        generator.smoothHeights(parseInt(smoothing.value), parseFloat(smoothingStrength.value));
+    }
+    
+    // Erosion
+    updateLoadingStatus('Applying erosion...');
+    await new Promise(resolve => setTimeout(resolve, 10));
+    generator.applyHydraulicErosion({
+        iterations: parseInt(erosionIterations.value),
+        erosionStrength: parseFloat(erosionStrength.value),
+        depositionRate: parseFloat(depositionRate.value)
+    });
+    
+    // Climate
+    updateLoadingStatus('Simulating climate...');
+    await new Promise(resolve => setTimeout(resolve, 10));
+    generator.generatePrecipitation({
+        windDirection: parseInt(windDirection.value),
+        windStrength: parseFloat(windStrengthSlider.value)
+    });
+    generator.calculateDrainage({
+        numberOfRivers: parseInt(numRiversSlider.value)
+    });
+    
+    // Kingdoms
+    updateLoadingStatus('Forming kingdoms...');
+    await new Promise(resolve => setTimeout(resolve, 10));
+    if (generator.renderMode === 'political') {
+        generator.generateKingdoms(parseInt(numKingdomsSlider.value), parseInt(roadDensitySlider.value));
+    }
+    
+    // Final render
+    updateLoadingStatus('Rendering map...');
+    await new Promise(resolve => setTimeout(resolve, 10));
+    generator.render();
+    
+    // Update stats
+    const landCount = generator.getLandCount();
+    const landPercent = ((landCount / generator.cellCount) * 100).toFixed(1);
+    statLand.textContent = `${landPercent}%`;
+    statRenderTime.textContent = generator.metrics.renderTime.toFixed(1) + 'ms';
+    
+    hideLoading();
+}
+
+// Legacy generateHeightmapWithLoading - now uses async pattern
+async function generateHeightmapWithLoading() {
     if (!generator.points || generator.cellCount === 0) {
         hideLoading();
         return;
@@ -170,68 +282,25 @@ function generateHeightmapWithLoading() {
     
     const seed = parseInt(seedInput.value) || 12345;
     
-    setTimeout(() => {
-        updateLoadingStatus('Sculpting terrain...');
-        
-        const options = {
-            seed: seed + 1000,
-            algorithm: noiseAlgorithm.value,
-            frequency: parseFloat(noiseFrequency.value),
-            octaves: parseInt(noiseOctaves.value),
-            seaLevel: parseFloat(seaLevel.value),
-            falloff: falloffType.value,
-            falloffStrength: parseFloat(falloffStrength.value),
-            smoothing: parseInt(smoothing.value),
-            smoothingStrength: parseFloat(smoothingStrength.value)
-        };
-        
-        generator.generateHeightmap(options);
-        
-        setTimeout(() => {
-            updateLoadingStatus('Applying erosion...');
-            
-            generator.applyHydraulicErosion({
-                iterations: parseInt(erosionIterations.value),
-                erosionStrength: parseFloat(erosionStrength.value),
-                depositionRate: parseFloat(depositionRate.value)
-            });
-            
-            setTimeout(() => {
-                updateLoadingStatus('Simulating climate...');
-                
-                generator.generatePrecipitation({
-                    windDirection: parseInt(windDirection.value),
-                    windStrength: parseFloat(windStrengthSlider.value)
-                });
-                generator.calculateDrainage({
-                    numberOfRivers: parseInt(numRiversSlider.value)
-                });
-                
-                setTimeout(() => {
-                    updateLoadingStatus('Forming kingdoms...');
-                    
-                    if (generator.renderMode === 'political') {
-                        generator.generateKingdoms(parseInt(numKingdomsSlider.value), parseInt(roadDensitySlider.value));
-                    }
-                    
-                    setTimeout(() => {
-                        updateLoadingStatus('Rendering map...');
-                        
-                        generator.render();
-                        
-                        // Update stats
-                        const landCount = generator.getLandCount();
-                        const landPercent = ((landCount / generator.cellCount) * 100).toFixed(1);
-                        statLand.textContent = `${landPercent}%`;
-                        statRenderTime.textContent = generator.metrics.renderTime.toFixed(1) + 'ms';
-                        
-                        // Hide loading screen
-                        hideLoading();
-                    }, 20);
-                }, 20);
-            }, 20);
-        }, 20);
-    }, 20);
+    updateLoadingStatus('Sculpting terrain...');
+    await new Promise(resolve => setTimeout(resolve, 20));
+    
+    const options = {
+        seed: seed + 1000,
+        algorithm: noiseAlgorithm.value,
+        frequency: parseFloat(noiseFrequency.value),
+        octaves: parseInt(noiseOctaves.value),
+        seaLevel: parseFloat(seaLevel.value),
+        falloff: falloffType.value,
+        falloffStrength: parseFloat(falloffStrength.value),
+        smoothing: parseInt(smoothing.value),
+        smoothingStrength: parseFloat(smoothingStrength.value)
+    };
+    
+    generator.generateHeightmap(options);
+    
+    // skipSmoothing=true because generateHeightmap already handles it
+    await postProcessGeneration(seed, true);
 }
 
 generateBtn.addEventListener('click', generate);
@@ -443,6 +512,15 @@ roadDensitySlider.addEventListener('input', (e) => {
     roadDensityValue.textContent = e.target.value;
 });
 
+// Regenerate roads when slider is released (keep existing cities)
+roadDensitySlider.addEventListener('change', (e) => {
+    if (generator.kingdoms && generator.kingdomCount > 0 && generator.cities && generator.cities.length > 0) {
+        generator.roadDensity = parseInt(e.target.value);
+        generator._generateRoads();
+        generator.render();
+    }
+});
+
 function generateKingdoms() {
     if (!generator.heights) {
         alert('Generate heightmap first');
@@ -544,6 +622,25 @@ showDelaunayToggle.addEventListener('change', (e) => {
 
 showRiversToggle.addEventListener('change', (e) => {
     generator.showRivers = e.target.checked;
+    generator.render();
+    updateRenderStats();
+});
+
+showGridToggle.addEventListener('change', (e) => {
+    generator.showGrid = e.target.checked;
+    generator.render();
+    updateRenderStats();
+});
+
+showScaleToggle.addEventListener('change', (e) => {
+    generator.showScale = e.target.checked;
+    generator.render();
+    updateRenderStats();
+});
+
+worldSizeSlider.addEventListener('input', (e) => {
+    worldSizeValue.textContent = e.target.value;
+    generator.worldSizeKm = parseInt(e.target.value);
     generator.render();
     updateRenderStats();
 });
@@ -660,9 +757,9 @@ canvas.addEventListener('mousemove', (e) => {
                     if (stats) {
                         html += `<div class="tt-title">${stats.name}</div>`;
                         html += `<div class="tt-stats">`;
+                        html += `<div class="tt-stat"><span class="tt-label">Population:</span> ${stats.population.toLocaleString()}</div>`;
                         html += `<div class="tt-stat"><span class="tt-label">Capital:</span> ${stats.capitalName || 'Unknown'}</div>`;
                         html += `<div class="tt-stat"><span class="tt-label">Cities:</span> ${stats.cityCount}</div>`;
-                        html += `<div class="tt-stat"><span class="tt-label">Territory:</span> ${stats.cellCount.toLocaleString()} cells</div>`;
                         if (stats.terrain.coastalCells > 0) {
                             html += `<div class="tt-stat"><span class="tt-label">Coastal:</span> Yes</div>`;
                         }
@@ -674,10 +771,9 @@ canvas.addEventListener('mousemove', (e) => {
                         html += `<div class="tt-title">★ ${stats.name}</div>`;
                         html += `<div class="tt-subtitle">Capital of ${stats.kingdomName}</div>`;
                         html += `<div class="tt-stats">`;
-                        html += `<div class="tt-stat"><span class="tt-label">Elevation:</span> ${stats.elevation}m</div>`;
+                        html += `<div class="tt-stat"><span class="tt-label">Population:</span> ${stats.population.toLocaleString()}</div>`;
                         if (stats.isCoastal) html += `<div class="tt-stat"><span class="tt-label">Coastal:</span> Yes</div>`;
                         if (stats.isNearRiver) html += `<div class="tt-stat"><span class="tt-label">River:</span> Nearby</div>`;
-                        html += `<div class="tt-stat"><span class="tt-label">Cities:</span> ${stats.cityCount}</div>`;
                         html += `</div>`;
                     }
                 } else if (labelHit.type === 'city') {
@@ -686,7 +782,7 @@ canvas.addEventListener('mousemove', (e) => {
                         html += `<div class="tt-title">${stats.name}</div>`;
                         html += `<div class="tt-subtitle">${stats.kingdomName}</div>`;
                         html += `<div class="tt-stats">`;
-                        html += `<div class="tt-stat"><span class="tt-label">Elevation:</span> ${stats.elevation}m</div>`;
+                        html += `<div class="tt-stat"><span class="tt-label">Population:</span> ${stats.population.toLocaleString()}</div>`;
                         if (stats.isCoastal) html += `<div class="tt-stat"><span class="tt-label">Coastal:</span> Yes</div>`;
                         if (stats.isNearRiver) html += `<div class="tt-stat"><span class="tt-label">River:</span> Nearby</div>`;
                         html += `</div>`;
@@ -900,6 +996,9 @@ generator.showEdges = showEdgesToggle.checked;
 generator.showCenters = showCentersToggle.checked;
 generator.showDelaunay = showDelaunayToggle.checked;
 generator.showRivers = showRiversToggle.checked;
+generator.showGrid = showGridToggle.checked;
+generator.showScale = showScaleToggle.checked;
+generator.worldSizeKm = parseInt(worldSizeSlider.value);
 generator.renderMode = renderMode.value;
 generator.subdivisionLevel = 0;
 
