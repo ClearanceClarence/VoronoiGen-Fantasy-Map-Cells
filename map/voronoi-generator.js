@@ -13,6 +13,7 @@ import {
     ELEVATION 
 } from './map-constants.js';
 import { renderingMethods } from './rendering-methods.js';
+import { TileCache } from './tile-cache.js';
 
 export class VoronoiGenerator {
     constructor(canvas) {
@@ -111,6 +112,10 @@ export class VoronoiGenerator {
         this._borderEdgesCache = null;
         this._borderPathsCache = null;
         this._kingdomBoundaryCache = null;
+        
+        // Tile cache for fast pan/zoom rendering
+        this.tileCache = null;  // Initialized after resize when dimensions are known
+        this.useTileRendering = false;  // Disabled - direct rendering is always crisp
         
         // Debounce timers
         this._renderDebounceTimer = null;
@@ -242,7 +247,6 @@ export class VoronoiGenerator {
             
             // Force full render on mouse up
             this._isInteracting = false;
-            this._resetTransformCSS();
             this.render();
         }
     }
@@ -287,14 +291,13 @@ export class VoronoiGenerator {
         if (this.isDragging) {
             this.isDragging = false;
             this._isInteracting = false;
-            this._resetTransformCSS();
             this.render();
         }
     }
     
     /**
      * Debounced render for smooth interaction
-     * Uses CSS transform for immediate feedback, then full render after delay
+     * Uses low-res render during interaction, full render after delay
      */
     _debouncedRender(delay = 16) {
         // Cancel any pending render
@@ -305,14 +308,19 @@ export class VoronoiGenerator {
             clearTimeout(this._fullRenderTimer);
         }
         
-        // During active interaction, use CSS transform for instant feedback
+        // During active interaction, do a fast low-res render
         if (this._isInteracting) {
-            this._applyTransformCSS();
+            // Throttle low-res renders to ~30fps during interaction
+            if (!this._lastLowResRender || performance.now() - this._lastLowResRender > 33) {
+                this._renderDebounceTimer = requestAnimationFrame(() => {
+                    this.renderLowRes();
+                    this._lastLowResRender = performance.now();
+                });
+            }
             
             // Schedule full render after interaction stops
             this._fullRenderTimer = setTimeout(() => {
                 this._isInteracting = false;
-                this._resetTransformCSS();
                 this.render();
             }, 150);
         } else {
@@ -325,6 +333,7 @@ export class VoronoiGenerator {
     
     /**
      * Apply CSS transform for fast visual feedback during pan/zoom
+     * (Kept for potential future use but not currently active)
      */
     _applyTransformCSS() {
         if (!this._lastRenderedViewport) {
@@ -464,6 +473,13 @@ export class VoronoiGenerator {
         
         this.ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
         
+        // Initialize or reinitialize tile cache with new dimensions
+        if (this.width > 0 && this.height > 0) {
+            this.tileCache = new TileCache(this, {
+                tileSize: 512  // Adjust based on typical cell density
+            });
+        }
+        
         // Regenerate if we have points
         if (this.points && this.cellCount > 0) {
             this.updateDiagram();
@@ -500,6 +516,11 @@ export class VoronoiGenerator {
         this.drainage = null;
         this._contourCache = null;
         this._coastlineCache = null;
+        
+        // Invalidate tile cache
+        if (this.tileCache) {
+            this.tileCache.invalidate();
+        }
         
         const margin = 1;
         const w = this.width - margin * 2;
@@ -671,6 +692,11 @@ export class VoronoiGenerator {
         
         // Clear contour cache so it regenerates with new heights
         this.clearContourCache();
+        
+        // Invalidate tile cache
+        if (this.tileCache) {
+            this.tileCache.invalidate();
+        }
         
         this.metrics.heightmapTime = performance.now() - start;
         this.render();
@@ -1284,6 +1310,11 @@ export class VoronoiGenerator {
         this._contourCache = null;
         this._coastlineCache = null;
         
+        // Invalidate tile cache (political layer)
+        if (this.tileCache) {
+            this.tileCache.invalidate('political');
+        }
+        
         // Store road density for use in city/road generation
         this.roadDensity = roadDensity;
         
@@ -1768,6 +1799,11 @@ export class VoronoiGenerator {
      * Number of cities based on kingdom size
      */
     _generateCities() {
+        // Clear old city names from used set before regenerating
+        if (this.cityNames && this.nameGenerator) {
+            this.nameGenerator.clearCityNames(this.cityNames);
+        }
+        
         this.cities = [];      // Array of {cell, kingdom, type}
         this.cityNames = [];
         
@@ -1912,8 +1948,106 @@ export class VoronoiGenerator {
         // Generate names for all cities
         this.cityNames = this.nameGenerator.generateNames(this.cities.length, 'city');
         
+        // Ensure we have enough names (fallback for any missing)
+        while (this.cityNames.length < this.cities.length) {
+            this.cityNames.push(`City ${this.cityNames.length + 1}`);
+        }
+        
         // Generate roads connecting cities
         this._generateRoads();
+        
+        // Generate population distribution
+        this._generatePopulation();
+    }
+    
+    /**
+     * Generate population distribution across kingdoms, capitals, and cities
+     * Uses a realistic distribution where capitals have the most, then cities
+     */
+    _generatePopulation() {
+        // Base population scales with land cells (roughly 50-200 people per cell)
+        const landCells = this.heights.filter(h => h >= ELEVATION.SEA_LEVEL).length;
+        const popPerCell = 50 + PRNG.random() * 150;
+        this.totalPopulation = Math.round(landCells * popPerCell);
+        
+        // Initialize arrays
+        this.kingdomPopulations = new Array(this.kingdomCount).fill(0);
+        this.capitalPopulations = new Array(this.kingdomCount).fill(0);
+        
+        // Distribute population to kingdoms based on cell count
+        let totalKingdomCells = 0;
+        for (let k = 0; k < this.kingdomCount; k++) {
+            totalKingdomCells += (this.kingdomCells[k] || []).length;
+        }
+        
+        // First pass: assign kingdom populations proportional to territory
+        let assignedPop = 0;
+        for (let k = 0; k < this.kingdomCount; k++) {
+            const cells = (this.kingdomCells[k] || []).length;
+            // Add some variation (+/- 20%)
+            const variation = 0.8 + PRNG.random() * 0.4;
+            const proportion = cells / Math.max(1, totalKingdomCells);
+            this.kingdomPopulations[k] = Math.round(this.totalPopulation * proportion * variation);
+            assignedPop += this.kingdomPopulations[k];
+        }
+        
+        // Normalize to match total
+        const normFactor = this.totalPopulation / Math.max(1, assignedPop);
+        for (let k = 0; k < this.kingdomCount; k++) {
+            this.kingdomPopulations[k] = Math.round(this.kingdomPopulations[k] * normFactor);
+        }
+        
+        // Distribute kingdom population to settlements
+        // Capital gets 15-25% of kingdom pop, cities share 30-40%, rest is rural
+        for (let k = 0; k < this.kingdomCount; k++) {
+            const kingdomPop = this.kingdomPopulations[k];
+            
+            // Capital population (15-25%)
+            const capitalShare = 0.15 + PRNG.random() * 0.10;
+            this.capitalPopulations[k] = Math.round(kingdomPop * capitalShare);
+            
+            // Get cities in this kingdom
+            const kingdomCities = this.cities.filter(c => c.kingdom === k);
+            
+            if (kingdomCities.length > 0) {
+                // Cities share 30-40% of population
+                const citiesShare = 0.30 + PRNG.random() * 0.10;
+                const totalCityPop = Math.round(kingdomPop * citiesShare);
+                
+                // Distribute among cities with variation (larger share for earlier/better placed cities)
+                let totalWeight = 0;
+                const cityWeights = kingdomCities.map((city, idx) => {
+                    // Earlier cities in the list tend to be better placed
+                    const positionBonus = 1 + (kingdomCities.length - idx) / kingdomCities.length;
+                    // Coastal and river cities get bonus
+                    let bonus = 1;
+                    const cellIdx = city.cell;
+                    // Check coastal
+                    for (const n of this.getNeighbors(cellIdx)) {
+                        if (this.heights[n] < ELEVATION.SEA_LEVEL) {
+                            bonus += 0.3;
+                            break;
+                        }
+                    }
+                    const weight = positionBonus * bonus * (0.7 + PRNG.random() * 0.6);
+                    totalWeight += weight;
+                    return weight;
+                });
+                
+                // Assign populations based on weights
+                kingdomCities.forEach((city, idx) => {
+                    const share = cityWeights[idx] / Math.max(0.001, totalWeight);
+                    city.population = Math.round(totalCityPop * share);
+                });
+            }
+        }
+        
+        // Assign population to cities that might not have a kingdom
+        for (const city of this.cities) {
+            if (city.population === undefined) {
+                city.population = Math.round(1000 + PRNG.random() * 5000);
+            }
+        }
     }
     
     /**

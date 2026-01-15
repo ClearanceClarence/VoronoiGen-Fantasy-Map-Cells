@@ -152,6 +152,180 @@ render() {
     
     this.metrics.renderTime = performance.now() - start;
 },
+
+/**
+ * Low-resolution render for smooth pan/zoom interaction
+ * Skips expensive operations like labels, contours, rivers
+ */
+renderLowRes() {
+    const ctx = this.ctx;
+    
+    // Clear canvas
+    ctx.fillStyle = this.colors.bg;
+    ctx.fillRect(0, 0, this.width, this.height);
+    
+    if (!this.voronoi || !this.heights) return;
+    
+    ctx.save();
+    ctx.translate(this.viewport.x, this.viewport.y);
+    ctx.scale(this.viewport.zoom, this.viewport.zoom);
+    
+    // Get visible bounds for culling
+    const bounds = this.getVisibleBounds();
+    
+    // Render based on mode - simplified versions
+    if (this.renderMode === 'political' && this.kingdoms && this.kingdomCount > 0) {
+        this._renderPoliticalCellsLowRes(ctx, bounds);
+    } else {
+        this._renderTerrainCellsLowRes(ctx, bounds);
+    }
+    
+    ctx.restore();
+},
+
+/**
+ * Low-res political map rendering - just colored cells, no borders/labels
+ */
+_renderPoliticalCellsLowRes(ctx, bounds) {
+    const hasKingdoms = this.kingdoms && this.kingdomCount > 0;
+    
+    // Batch by kingdom for fewer state changes
+    const kingdomBatches = new Map();
+    
+    for (let i = 0; i < this.cellCount; i++) {
+        const x = this.points[i * 2];
+        const y = this.points[i * 2 + 1];
+        
+        // Frustum culling with margin
+        if (x < bounds.left - 20 || x > bounds.right + 20 ||
+            y < bounds.top - 20 || y > bounds.bottom + 20) continue;
+        
+        // Ocean cells
+        if (this.heights[i] < ELEVATION.SEA_LEVEL) {
+            if (!kingdomBatches.has(-1)) {
+                kingdomBatches.set(-1, []);
+            }
+            kingdomBatches.get(-1).push(i);
+            continue;
+        }
+        
+        // Land cells - group by kingdom
+        const kingdomId = hasKingdoms ? Math.max(0, this.kingdoms[i]) : 0;
+        
+        if (!kingdomBatches.has(kingdomId)) {
+            kingdomBatches.set(kingdomId, []);
+        }
+        kingdomBatches.get(kingdomId).push(i);
+    }
+    
+    // Draw ocean cells first
+    if (kingdomBatches.has(-1)) {
+        ctx.fillStyle = POLITICAL_OCEAN;
+        ctx.beginPath();
+        
+        for (const i of kingdomBatches.get(-1)) {
+            const cell = this.voronoi.cellPolygon(i);
+            if (!cell || cell.length < 3) continue;
+            
+            ctx.moveTo(cell[0][0], cell[0][1]);
+            for (let j = 1; j < cell.length; j++) {
+                ctx.lineTo(cell[j][0], cell[j][1]);
+            }
+            ctx.closePath();
+        }
+        ctx.fill();
+        kingdomBatches.delete(-1);
+    }
+    
+    // Draw each kingdom
+    for (const [kingdomId, cells] of kingdomBatches) {
+        // Get color index - kingdomColors stores indices into POLITICAL_COLORS
+        const colorIndex = (this.kingdomColors && this.kingdomColors[kingdomId] >= 0) 
+            ? this.kingdomColors[kingdomId] 
+            : kingdomId % POLITICAL_COLORS.length;
+        const color = POLITICAL_COLORS[colorIndex];
+        
+        ctx.fillStyle = color;
+        ctx.beginPath();
+        
+        for (const i of cells) {
+            const cell = this.voronoi.cellPolygon(i);
+            if (!cell || cell.length < 3) continue;
+            
+            ctx.moveTo(cell[0][0], cell[0][1]);
+            for (let j = 1; j < cell.length; j++) {
+                ctx.lineTo(cell[j][0], cell[j][1]);
+            }
+            ctx.closePath();
+        }
+        
+        ctx.fill();
+    }
+},
+
+/**
+ * Low-res terrain rendering - just colored cells, no smoothing
+ */
+_renderTerrainCellsLowRes(ctx, bounds) {
+    const isGrayscale = this.renderMode === 'heightmap';
+    const colorBatches = new Map();
+    
+    for (let i = 0; i < this.cellCount; i++) {
+        const x = this.points[i * 2];
+        const y = this.points[i * 2 + 1];
+        
+        // Frustum culling with margin
+        if (x < bounds.left - 20 || x > bounds.right + 20 ||
+            y < bounds.top - 20 || y > bounds.bottom + 20) continue;
+        
+        const elevation = this.heights[i];
+        let color;
+        
+        if (isGrayscale) {
+            const normalized = (elevation - ELEVATION.MIN) / ELEVATION.RANGE;
+            const gray = Math.floor(normalized * 255);
+            color = `rgb(${gray},${gray},${gray})`;
+        } else if (this.renderMode === 'precipitation' && this.precipitation) {
+            const precipIdx = Math.floor(this.precipitation[i] * (PRECIP_COLORS.length - 1));
+            color = PRECIP_COLORS[Math.max(0, Math.min(PRECIP_COLORS.length - 1, precipIdx))];
+        } else {
+            if (elevation < ELEVATION.SEA_LEVEL) {
+                const depthRatio = Math.abs(elevation) / Math.abs(ELEVATION.MIN);
+                const oceanIdx = Math.floor(depthRatio * (OCEAN_COLORS.length - 1));
+                color = OCEAN_COLORS[Math.max(0, Math.min(OCEAN_COLORS.length - 1, oceanIdx))];
+            } else {
+                const heightRatio = elevation / ELEVATION.MAX;
+                const landIdx = Math.floor(heightRatio * (LAND_COLORS.length - 1));
+                color = LAND_COLORS[Math.max(0, Math.min(LAND_COLORS.length - 1, landIdx))];
+            }
+        }
+        
+        if (!colorBatches.has(color)) {
+            colorBatches.set(color, []);
+        }
+        colorBatches.get(color).push(i);
+    }
+    
+    // Draw batched by color
+    for (const [color, cells] of colorBatches) {
+        ctx.fillStyle = color;
+        ctx.beginPath();
+        
+        for (const i of cells) {
+            const cell = this.voronoi.cellPolygon(i);
+            if (!cell || cell.length < 3) continue;
+            
+            ctx.moveTo(cell[0][0], cell[0][1]);
+            for (let j = 1; j < cell.length; j++) {
+                ctx.lineTo(cell[j][0], cell[j][1]);
+            }
+            ctx.closePath();
+        }
+        
+        ctx.fill();
+    }
+},
+
 /**
  * Draw zoom level indicator
  */
@@ -171,6 +345,17 @@ _drawZoomIndicator(ctx) {
  */
 _renderTerrainCells(ctx, bounds) {
     const isGrayscale = this.renderMode === 'heightmap';
+    
+    // Use tile cache for colored terrain (not grayscale heightmap)
+    if (!isGrayscale && this.tileCache && this.useTileRendering) {
+        this.tileCache.render(ctx, this.viewport, bounds, 'terrain');
+        // Still render lakes on top
+        if (this.lakeCells && this.lakeCells.size > 0) {
+            this._renderSmoothLakes(ctx, bounds);
+        }
+        this.metrics.visibleCells = this.cellCount; // Approximation
+        return;
+    }
     
     // Use contour rendering if enabled (faster than subdivision)
     if (this.subdivisionLevel > 0 && this.heights) {
@@ -341,6 +526,45 @@ _renderPoliticalMap(ctx, bounds) {
     
     const hasKingdoms = this.kingdoms && this.kingdomCount > 0;
     
+    // Use tile cache for kingdom cell colors (major performance boost)
+    if (this.tileCache && this.useTileRendering) {
+        // Draw cached tiles for kingdom colors
+        this.tileCache.render(ctx, this.viewport, bounds, 'political');
+        
+        // Draw lakes on top (semi-dynamic)
+        if (this.lakeCells && this.lakeCells.size > 0) {
+            ctx.fillStyle = POLITICAL_OCEAN;
+            for (const cellIndex of this.lakeCells) {
+                const cell = this.voronoi.cellPolygon(cellIndex);
+                if (!cell || cell.length < 3) continue;
+                
+                ctx.beginPath();
+                ctx.moveTo(cell[0][0], cell[0][1]);
+                for (let j = 1; j < cell.length; j++) {
+                    ctx.lineTo(cell[j][0], cell[j][1]);
+                }
+                ctx.closePath();
+                ctx.fill();
+            }
+        }
+        
+        // Draw kingdom borders (dynamic - scales with zoom)
+        if (hasKingdoms) {
+            this._renderKingdomBorders(ctx, bounds);
+        }
+        
+        // Draw coastline border
+        if (!this._coastlineCache) {
+            this._coastlineCache = this._buildSmoothCoastlineLoops();
+        }
+        const borderColor = '#5A4A3A';
+        const lineWidth = Math.max(0.3, 1 / this.viewport.zoom);
+        this._drawSmoothCoastStroke(ctx, this._coastlineCache, borderColor, lineWidth);
+        
+        return;
+    }
+    
+    // Original non-cached rendering below
     // 1. Fill entire visible area with ocean
     ctx.fillStyle = POLITICAL_OCEAN;
     ctx.fillRect(bounds.left, bounds.top, bounds.right - bounds.left, bounds.bottom - bounds.top);
@@ -502,6 +726,79 @@ _renderPoliticalMap(ctx, bounds) {
     const borderColor = '#5A4A3A';
     const lineWidth = Math.max(0.3, 1 / this.viewport.zoom);
     this._drawSmoothCoastStroke(ctx, coastLoops, borderColor, lineWidth);
+},
+
+/**
+ * Render kingdom borders (extracted for use with tile cache)
+ */
+_renderKingdomBorders(ctx, bounds) {
+    if (!this.kingdoms || this.kingdomCount <= 0) return;
+    
+    const zoom = this.viewport.zoom;
+    ctx.strokeStyle = 'rgba(90, 74, 58, 0.5)';
+    ctx.lineWidth = Math.max(0.5, 1.2 / zoom);
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    ctx.setLineDash([]);
+    
+    ctx.beginPath();
+    
+    // For each pair of neighboring cells in different kingdoms
+    for (let i = 0; i < this.cellCount; i++) {
+        if (this.heights[i] < ELEVATION.SEA_LEVEL) continue;
+        
+        const myKingdom = this.kingdoms[i];
+        if (myKingdom < 0) continue;
+        
+        // Frustum culling
+        const x = this.points[i * 2];
+        const y = this.points[i * 2 + 1];
+        const margin = 50;
+        if (x < bounds.left - margin || x > bounds.right + margin || 
+            y < bounds.top - margin || y > bounds.bottom + margin) continue;
+        
+        const cellI = this.voronoi.cellPolygon(i);
+        if (!cellI || cellI.length < 3) continue;
+        
+        const neighbors = Array.from(this.voronoi.neighbors(i));
+        
+        for (const j of neighbors) {
+            if (j < 0 || j >= this.cellCount) continue;
+            if (this.heights[j] < ELEVATION.SEA_LEVEL) continue;
+            
+            const neighborKingdom = this.kingdoms[j];
+            if (neighborKingdom < 0 || neighborKingdom === myKingdom) continue;
+            
+            // Only draw from lower-indexed cell to avoid duplicates
+            if (i > j) continue;
+            
+            // Find the edge in cell i that faces cell j
+            const jx = this.points[j * 2];
+            const jy = this.points[j * 2 + 1];
+            
+            let bestEdge = null;
+            let bestDist = Infinity;
+            
+            for (let e = 0; e < cellI.length - 1; e++) {
+                const v1 = cellI[e];
+                const v2 = cellI[e + 1];
+                const midX = (v1[0] + v2[0]) / 2;
+                const midY = (v1[1] + v2[1]) / 2;
+                const dist = (midX - jx) ** 2 + (midY - jy) ** 2;
+                if (dist < bestDist) {
+                    bestDist = dist;
+                    bestEdge = [v1, v2];
+                }
+            }
+            
+            if (bestEdge) {
+                ctx.moveTo(bestEdge[0][0], bestEdge[0][1]);
+                ctx.lineTo(bestEdge[1][0], bestEdge[1][1]);
+            }
+        }
+    }
+    
+    ctx.stroke();
 },
 
 /**
@@ -1567,40 +1864,132 @@ _renderCapitols(ctx, bounds) {
         if (x < bounds.left - 50 || x > bounds.right + 50 ||
             y < bounds.top - 50 || y > bounds.bottom + 50) continue;
         
-        // Draw capitol marker (star shape)
-        const markerSize = Math.max(4, 8 / zoom);
+        // Scale for zoom
+        const scale = Math.max(0.5, 1 / zoom);
+        const baseSize = 12;
+        const s = baseSize * scale;
         
         ctx.save();
+        ctx.translate(x, y);
         
-        // Draw star marker
+        // Draw detailed castle/fortress icon
+        const inkColor = '#2C2416';
+        const lightColor = 'rgba(255, 252, 245, 0.95)';
+        const strokeWidth = Math.max(0.3, 0.8 * scale);
+        
+        // Light glow/halo behind for visibility
+        ctx.shadowColor = lightColor;
+        ctx.shadowBlur = 4 * scale;
+        
+        // Main castle body
+        ctx.fillStyle = inkColor;
+        ctx.strokeStyle = inkColor;
+        ctx.lineWidth = strokeWidth;
+        ctx.lineJoin = 'miter';
+        ctx.lineCap = 'square';
+        
+        // Central keep (tall rectangle)
         ctx.beginPath();
-        const spikes = 4;
-        const outerRadius = markerSize;
-        const innerRadius = markerSize * 0.4;
-        
-        for (let i = 0; i < spikes * 2; i++) {
-            const radius = i % 2 === 0 ? outerRadius : innerRadius;
-            const angle = (i * Math.PI / spikes) - Math.PI / 2;
-            const px = x + Math.cos(angle) * radius;
-            const py = y + Math.sin(angle) * radius;
-            if (i === 0) {
-                ctx.moveTo(px, py);
-            } else {
-                ctx.lineTo(px, py);
-            }
-        }
-        ctx.closePath();
-        
-        // Fill with dark color and light stroke
-        ctx.fillStyle = '#2C2416';
+        ctx.rect(-s * 0.25, -s * 0.9, s * 0.5, s * 0.9);
         ctx.fill();
-        ctx.strokeStyle = 'rgba(255, 252, 245, 0.9)';
-        ctx.lineWidth = Math.max(0.5, 1.5 / zoom);
-        ctx.stroke();
+        
+        // Keep battlements (crenellations on top)
+        ctx.beginPath();
+        const keepBattleWidth = s * 0.12;
+        const keepBattleHeight = s * 0.15;
+        for (let i = 0; i < 3; i++) {
+            const bx = -s * 0.25 + i * keepBattleWidth * 1.5 + keepBattleWidth * 0.25;
+            ctx.rect(bx, -s * 0.9 - keepBattleHeight, keepBattleWidth, keepBattleHeight);
+        }
+        ctx.fill();
+        
+        // Left tower
+        ctx.beginPath();
+        ctx.rect(-s * 0.6, -s * 0.65, s * 0.3, s * 0.65);
+        ctx.fill();
+        
+        // Left tower roof (pointed)
+        ctx.beginPath();
+        ctx.moveTo(-s * 0.65, -s * 0.65);
+        ctx.lineTo(-s * 0.45, -s * 0.95);
+        ctx.lineTo(-s * 0.25, -s * 0.65);
+        ctx.closePath();
+        ctx.fill();
+        
+        // Right tower  
+        ctx.beginPath();
+        ctx.rect(s * 0.3, -s * 0.65, s * 0.3, s * 0.65);
+        ctx.fill();
+        
+        // Right tower roof (pointed)
+        ctx.beginPath();
+        ctx.moveTo(s * 0.25, -s * 0.65);
+        ctx.lineTo(s * 0.45, -s * 0.95);
+        ctx.lineTo(s * 0.65, -s * 0.65);
+        ctx.closePath();
+        ctx.fill();
+        
+        // Walls connecting towers
+        ctx.beginPath();
+        ctx.rect(-s * 0.6, -s * 0.35, s * 0.35, s * 0.35);
+        ctx.rect(s * 0.25, -s * 0.35, s * 0.35, s * 0.35);
+        ctx.fill();
+        
+        // Wall battlements
+        ctx.beginPath();
+        const wallBattleWidth = s * 0.08;
+        const wallBattleHeight = s * 0.1;
+        // Left wall
+        for (let i = 0; i < 3; i++) {
+            const bx = -s * 0.58 + i * wallBattleWidth * 1.3;
+            ctx.rect(bx, -s * 0.35 - wallBattleHeight, wallBattleWidth, wallBattleHeight);
+        }
+        // Right wall
+        for (let i = 0; i < 3; i++) {
+            const bx = s * 0.27 + i * wallBattleWidth * 1.3;
+            ctx.rect(bx, -s * 0.35 - wallBattleHeight, wallBattleWidth, wallBattleHeight);
+        }
+        ctx.fill();
+        
+        // Gate (arched doorway)
+        ctx.fillStyle = lightColor;
+        ctx.beginPath();
+        ctx.moveTo(-s * 0.12, 0);
+        ctx.lineTo(-s * 0.12, -s * 0.25);
+        ctx.arc(0, -s * 0.25, s * 0.12, Math.PI, 0, false);
+        ctx.lineTo(s * 0.12, 0);
+        ctx.closePath();
+        ctx.fill();
+        
+        // Flag on central keep
+        ctx.fillStyle = inkColor;
+        ctx.beginPath();
+        // Pole
+        ctx.rect(-s * 0.02, -s * 1.3, s * 0.04, s * 0.25);
+        ctx.fill();
+        // Flag
+        ctx.beginPath();
+        ctx.moveTo(s * 0.02, -s * 1.3);
+        ctx.lineTo(s * 0.25, -s * 1.2);
+        ctx.lineTo(s * 0.02, -s * 1.1);
+        ctx.closePath();
+        ctx.fill();
+        
+        // Small windows on keep
+        ctx.fillStyle = lightColor;
+        ctx.beginPath();
+        ctx.rect(-s * 0.08, -s * 0.7, s * 0.06, s * 0.1);
+        ctx.rect(s * 0.02, -s * 0.7, s * 0.06, s * 0.1);
+        ctx.rect(-s * 0.03, -s * 0.5, s * 0.06, s * 0.08);
+        ctx.fill();
+        
+        ctx.shadowBlur = 0;
+        ctx.restore();
         
         // Draw capitol name with collision detection
+        const markerSize = s * 1.3;
         const fontSize = Math.max(6, 11 / zoom);
-        ctx.font = `italic ${fontSize}px 'IM Fell English', Georgia, serif`;
+        ctx.font = `600 ${fontSize}px 'IM Fell English', Georgia, serif`;
         
         const textWidth = ctx.measureText(capitolName).width;
         const textHeight = fontSize;
@@ -1709,8 +2098,6 @@ _renderCapitols(ctx, bounds) {
                 }
             });
         }
-        
-        ctx.restore();
     }
 },
 
@@ -1734,7 +2121,7 @@ _renderCities(ctx, bounds) {
     
     for (let i = 0; i < this.cities.length; i++) {
         const city = this.cities[i];
-        const cityName = this.cityNames[i];
+        const cityName = this.cityNames && this.cityNames[i] ? this.cityNames[i] : `City ${i + 1}`;
         
         if (!city || city.cell < 0) continue;
         
@@ -1745,17 +2132,102 @@ _renderCities(ctx, bounds) {
         if (x < bounds.left - 50 || x > bounds.right + 50 ||
             y < bounds.top - 50 || y > bounds.bottom + 50) continue;
         
-        const markerSize = Math.max(1.5, 4 / zoom);
+        // Scale for zoom
+        const scale = Math.max(0.4, 0.8 / zoom);
+        const baseSize = 8;
+        const s = baseSize * scale;
+        const markerSize = s * 1.2;
         
         ctx.save();
+        ctx.translate(x, y);
         
-        // Draw simple circle marker for all cities
-        ctx.globalAlpha = Math.min(1, zoom * 0.7);
+        // Draw detailed town icon
+        const inkColor = '#2C2416';
+        const lightColor = 'rgba(255, 252, 245, 0.95)';
+        const strokeWidth = Math.max(0.2, 0.5 * scale);
+        
+        ctx.globalAlpha = Math.min(1, zoom * 0.8);
+        
+        // Light glow behind
+        ctx.shadowColor = lightColor;
+        ctx.shadowBlur = 2 * scale;
+        
+        ctx.fillStyle = inkColor;
+        ctx.strokeStyle = inkColor;
+        ctx.lineWidth = strokeWidth;
+        ctx.lineJoin = 'miter';
+        ctx.lineCap = 'square';
+        
+        // Church/cathedral spire (center, tallest)
         ctx.beginPath();
-        ctx.arc(x, y, markerSize * 0.4, 0, Math.PI * 2);
-        ctx.fillStyle = '#2C2416';
+        // Spire
+        ctx.moveTo(0, -s * 1.1);
+        ctx.lineTo(-s * 0.12, -s * 0.5);
+        ctx.lineTo(s * 0.12, -s * 0.5);
+        ctx.closePath();
+        ctx.fill();
+        // Church body
+        ctx.beginPath();
+        ctx.rect(-s * 0.18, -s * 0.5, s * 0.36, s * 0.5);
         ctx.fill();
         
+        // Cross on top
+        ctx.beginPath();
+        ctx.rect(-s * 0.02, -s * 1.25, s * 0.04, s * 0.12);
+        ctx.rect(-s * 0.06, -s * 1.2, s * 0.12, s * 0.03);
+        ctx.fill();
+        
+        // Left building (house with peaked roof)
+        ctx.beginPath();
+        ctx.rect(-s * 0.55, -s * 0.35, s * 0.3, s * 0.35);
+        ctx.fill();
+        // Roof
+        ctx.beginPath();
+        ctx.moveTo(-s * 0.6, -s * 0.35);
+        ctx.lineTo(-s * 0.4, -s * 0.6);
+        ctx.lineTo(-s * 0.2, -s * 0.35);
+        ctx.closePath();
+        ctx.fill();
+        
+        // Right building (house with peaked roof)
+        ctx.beginPath();
+        ctx.rect(s * 0.25, -s * 0.3, s * 0.28, s * 0.3);
+        ctx.fill();
+        // Roof
+        ctx.beginPath();
+        ctx.moveTo(s * 0.2, -s * 0.3);
+        ctx.lineTo(s * 0.39, -s * 0.55);
+        ctx.lineTo(s * 0.58, -s * 0.3);
+        ctx.closePath();
+        ctx.fill();
+        
+        // Small tower/turret on right building
+        ctx.beginPath();
+        ctx.rect(s * 0.42, -s * 0.5, s * 0.1, s * 0.2);
+        ctx.fill();
+        ctx.beginPath();
+        ctx.moveTo(s * 0.4, -s * 0.5);
+        ctx.lineTo(s * 0.47, -s * 0.65);
+        ctx.lineTo(s * 0.54, -s * 0.5);
+        ctx.closePath();
+        ctx.fill();
+        
+        // Windows (tiny bright spots)
+        ctx.fillStyle = lightColor;
+        ctx.beginPath();
+        // Church window (arched)
+        ctx.arc(0, -s * 0.25, s * 0.06, Math.PI, 0, false);
+        ctx.rect(-s * 0.06, -s * 0.25, s * 0.12, s * 0.1);
+        ctx.fill();
+        // House windows
+        ctx.beginPath();
+        ctx.rect(-s * 0.48, -s * 0.22, s * 0.06, s * 0.08);
+        ctx.rect(-s * 0.35, -s * 0.22, s * 0.06, s * 0.08);
+        ctx.rect(s * 0.32, -s * 0.18, s * 0.05, s * 0.07);
+        ctx.rect(s * 0.42, -s * 0.18, s * 0.05, s * 0.07);
+        ctx.fill();
+        
+        ctx.shadowBlur = 0;
         ctx.globalAlpha = 1;
         ctx.restore();
         
@@ -4821,6 +5293,9 @@ getKingdomStats(kingdomIndex) {
     const name = this.kingdomNames ? this.kingdomNames[kingdomIndex] : `Kingdom ${kingdomIndex}`;
     const capitalName = this.capitolNames ? this.capitolNames[kingdomIndex] : null;
     
+    // Get population
+    const population = this.kingdomPopulations ? this.kingdomPopulations[kingdomIndex] : 0;
+    
     // Count cities in this kingdom
     let cityCount = 0;
     if (this.cities) {
@@ -4853,6 +5328,7 @@ getKingdomStats(kingdomIndex) {
     return {
         name,
         capitalName,
+        population,
         cellCount: cells.length,
         cityCount,
         areaKm2,
@@ -4874,8 +5350,11 @@ getCityStats(cityIndex) {
     if (!this.cities || cityIndex < 0 || cityIndex >= this.cities.length) return null;
     
     const city = this.cities[cityIndex];
-    const name = this.cityNames ? this.cityNames[cityIndex] : `City ${cityIndex}`;
-    const kingdomName = this.kingdomNames && city.kingdom >= 0 ? this.kingdomNames[city.kingdom] : 'Unknown';
+    const name = (this.cityNames && this.cityNames[cityIndex]) ? this.cityNames[cityIndex] : `City ${cityIndex + 1}`;
+    const kingdomName = (this.kingdomNames && city.kingdom >= 0 && this.kingdomNames[city.kingdom]) ? this.kingdomNames[city.kingdom] : 'Unknown';
+    
+    // Get population
+    const population = city.population || 0;
     
     const cellIdx = city.cell;
     const height = this.heights ? Math.round(this.heights[cellIdx]) : 0;
@@ -4913,6 +5392,7 @@ getCityStats(cityIndex) {
     return {
         name,
         kingdomName,
+        population,
         elevation: height,
         isCoastal,
         isNearRiver
@@ -4931,6 +5411,9 @@ getCapitalStats(kingdomIndex) {
     const cellIdx = this.capitols[kingdomIndex];
     const name = this.capitolNames ? this.capitolNames[kingdomIndex] : `Capital ${kingdomIndex}`;
     const kingdomName = this.kingdomNames ? this.kingdomNames[kingdomIndex] : `Kingdom ${kingdomIndex}`;
+    
+    // Get population
+    const population = this.capitalPopulations ? this.capitalPopulations[kingdomIndex] : 0;
     
     const height = this.heights ? Math.round(this.heights[cellIdx]) : 0;
     
@@ -4975,6 +5458,7 @@ getCapitalStats(kingdomIndex) {
     return {
         name,
         kingdomName,
+        population,
         elevation: height,
         isCoastal,
         isNearRiver,
